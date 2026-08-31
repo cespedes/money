@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: money
+      POSTGRES_PASSWORD: money
+      POSTGRES_DB: money
+    ports:
+      - "127.0.0.1:30731:5432"
+    volumes:
+      - money-postgres-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U money"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgres://money:money@postgres:5432/money?sslmode=disable
+      ADDR: ":30730"
+    ports:
+      - "127.0.0.1:30730:30730"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  money-postgres-data:
