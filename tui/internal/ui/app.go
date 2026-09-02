@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"money/tui/internal/client"
 )
@@ -97,7 +97,7 @@ func (m App) currentEditing() bool {
 	return m.transactions.Editing()
 }
 
-func (m App) View() string {
+func (m App) View() tea.View {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render("Money — Accounting TUI"))
@@ -121,7 +121,10 @@ func (m App) View() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(m.footer()))
-	return b.String()
+
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	return v
 }
 
 func (m App) footer() string {

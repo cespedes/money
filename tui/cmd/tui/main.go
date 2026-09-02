@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"money/tui/internal/client"
 	"money/tui/internal/ui"
@@ -21,7 +21,7 @@ func main() {
 	c := client.New(apiURL)
 	app := ui.New(c)
 
-	if _, err := tea.NewProgram(app, tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(app).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
