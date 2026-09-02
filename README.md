@@ -81,6 +81,21 @@ To apply the schema against a database you're managing yourself instead of
 psql "$DATABASE_URL" -f db/schema.sql
 ```
 
+### Running the tests
+
+The API's tests exercise the store and HTTP layers against a real
+PostgreSQL server, since part of the double-entry invariant is enforced by
+a database trigger (see `db/schema.sql`) that a mock can't reproduce. They
+need a running server (`make db-up` is enough) and create/drop their own
+disposable `money_test_*` databases on it, so they never touch the
+database used for local development. Point them elsewhere with
+`TEST_DATABASE_URL`; they skip automatically if no server is reachable.
+
+```sh
+make db-up
+make test
+```
+
 ## API
 
 All endpoints accept and return JSON.

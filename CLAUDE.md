@@ -24,6 +24,8 @@ make test        # go test ./... in both api and tui modules
 
 To run a single test: `cd api && go test ./internal/store/... -run TestName` (same pattern under `tui/`).
 
+The `api` module's tests (`internal/store`, `internal/api`, `internal/db`) hit a real PostgreSQL server — `make db-up` is enough — because part of the double-entry invariant lives in a database trigger a mock can't reproduce. Each test creates and drops its own disposable `money_test_*` database via `internal/testutil`, so they never touch the dev database; they skip automatically if no server is reachable. The `tui` module's tests need no database or terminal: `internal/client` is tested against an `httptest` server, and `internal/ui`'s Bubble Tea models are driven directly with synthetic `tea.Msg`/`tea.KeyPressMsg` values (see `keyPress`/`typeString` helpers in `internal/ui/accounts_test.go`) against the same kind of fake server.
+
 Both `api` and `postgres` containers publish ports to `127.0.0.1` only (api on 30730, postgres on 30731) — not reachable from other machines by default. Keep this binding when editing `docker-compose.yml`.
 
 ## Architecture
