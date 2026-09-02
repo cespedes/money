@@ -78,6 +78,25 @@ func TestDeleteAccount(t *testing.T) {
 	}
 }
 
+func TestGetAccountLedger(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/accounts/7/transactions" {
+			t.Errorf("got %s %s, want GET /accounts/7/transactions", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]client.LedgerEntry{
+			{TransactionID: 1, Description: "Invoice #1", Value: 1000, Balance: 1000},
+		})
+	})
+
+	entries, err := c.GetAccountLedger(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetAccountLedger: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Balance != 1000 {
+		t.Fatalf("GetAccountLedger = %+v", entries)
+	}
+}
+
 func TestListTransactions(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Transaction{{ID: 1, Description: "Invoice #1"}})

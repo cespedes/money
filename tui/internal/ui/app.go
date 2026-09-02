@@ -128,11 +128,16 @@ func (m App) View() tea.View {
 }
 
 func (m App) footer() string {
+	if m.active == tabAccounts && m.accounts.mode == accountsModeLedger {
+		return "↑/↓: navigate  •  esc/q: back"
+	}
 	if m.currentEditing() {
 		return "enter: confirm field  •  esc: cancel"
 	}
 	base := "tab: switch view  •  ↑/↓: navigate  •  r: refresh  •  n: new  •  d: delete  •  q: quit"
-	if m.active == tabTransactions {
+	if m.active == tabAccounts {
+		base = fmt.Sprintf("%s  •  enter: view transactions", base)
+	} else {
 		base = fmt.Sprintf("%s  •  enter: view details", base)
 	}
 	return base

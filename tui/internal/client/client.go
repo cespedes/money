@@ -91,6 +91,15 @@ func (c *Client) DeleteAccount(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, "/accounts/"+strconv.FormatInt(id, 10), nil, nil)
 }
 
+func (c *Client) GetAccountLedger(ctx context.Context, accountID int64) ([]LedgerEntry, error) {
+	var entries []LedgerEntry
+	path := "/accounts/" + strconv.FormatInt(accountID, 10) + "/transactions"
+	if err := c.do(ctx, http.MethodGet, path, nil, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 func (c *Client) ListTransactions(ctx context.Context) ([]Transaction, error) {
 	var transactions []Transaction
 	if err := c.do(ctx, http.MethodGet, "/transactions", nil, &transactions); err != nil {

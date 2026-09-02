@@ -20,6 +20,7 @@ const (
 	accountsModeList accountsMode = iota
 	accountsModeCreate
 	accountsModeConfirmDelete
+	accountsModeLedger
 )
 
 // accountCreateStep is one step of the "new account" wizard: pick an
@@ -46,6 +47,9 @@ type accountsModel struct {
 	parentPicker    table.Model
 	pendingParentID *int64
 	inputs          []textinput.Model
+
+	ledgerAccount client.Account
+	ledgerTable   table.Model
 }
 
 const (
@@ -53,12 +57,17 @@ const (
 	fieldAccountCode
 )
 
+// moneyColumnWidth is the width of every "Value"/"Balance" table column;
+// cell content for those columns is right-aligned to this same width (see
+// rightAlign), since bubbles' table has no per-column alignment option.
+const moneyColumnWidth = 12
+
 func newAccountsModel(c *client.Client) accountsModel {
 	columns := []table.Column{
 		{Title: "ID", Width: 6},
 		{Title: "Code", Width: 10},
 		{Title: "Name", Width: 30},
-		{Title: "Parent", Width: 10},
+		{Title: "Balance", Width: moneyColumnWidth},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -77,11 +86,23 @@ func newAccountsModel(c *client.Client) accountsModel {
 		table.WithHeight(8),
 	)
 
+	ledgerTable := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Timestamp", Width: 17},
+			{Title: "Description", Width: 30},
+			{Title: "Value", Width: moneyColumnWidth},
+			{Title: "Balance", Width: moneyColumnWidth},
+		}),
+		table.WithFocused(true),
+		table.WithHeight(10),
+	)
+
 	return accountsModel{
 		client:       c,
 		table:        t,
 		parentPicker: parentPicker,
 		inputs:       []textinput.Model{name, code},
+		ledgerTable:  ledgerTable,
 	}
 }
 
@@ -96,9 +117,16 @@ func (m accountsModel) Editing() bool {
 func (m *accountsModel) SetSize(width, height int) {
 	m.table.SetWidth(width)
 	m.parentPicker.SetWidth(width)
+	m.ledgerTable.SetWidth(width)
 	if height > 5 {
 		m.table.SetHeight(height)
 		m.parentPicker.SetHeight(height)
+	}
+	// The ledger view has its own two-line header ("Transactions for #N
+	// Name" plus a blank line) above the table, unlike the plain list, so
+	// it needs two fewer rows to keep the footer on screen.
+	if height > 7 {
+		m.ledgerTable.SetHeight(height - 2)
 	}
 }
 
@@ -111,9 +139,22 @@ type accountMutatedMsg struct {
 	err error
 }
 
+type ledgerLoadedMsg struct {
+	entries []client.LedgerEntry
+	err     error
+}
+
 func (m accountsModel) loadAccounts() tea.Msg {
 	accounts, err := m.client.ListAccounts(context.Background())
 	return accountsLoadedMsg{accounts: accounts, err: err}
+}
+
+func (m accountsModel) loadLedger(accountID int64) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		entries, err := c.GetAccountLedger(context.Background(), accountID)
+		return ledgerLoadedMsg{entries: entries, err: err}
+	}
 }
 
 func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
@@ -124,8 +165,16 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 			return m, nil
 		}
 		m.err = ""
-		m.rows = msg.accounts
-		m.table.SetRows(accountsToRows(msg.accounts))
+		// m.rows must be kept in the exact same order as the table's rows,
+		// since "enter"/"d" look up the account under the cursor by
+		// indexing into m.rows — and the table displays accounts in tree
+		// order (children under their parent), not the API's ID order.
+		nodes := orderAccountsAsTree(msg.accounts)
+		m.rows = make([]client.Account, len(nodes))
+		for i, n := range nodes {
+			m.rows[i] = n.account
+		}
+		m.table.SetRows(nodesToRows(nodes))
 		return m, nil
 
 	case accountMutatedMsg:
@@ -137,6 +186,15 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		m.mode = accountsModeList
 		return m, m.loadAccounts
 
+	case ledgerLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.ledgerTable.SetRows(ledgerToRows(msg.entries))
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.mode {
 		case accountsModeList:
@@ -145,12 +203,19 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 			return m.updateCreate(msg)
 		case accountsModeConfirmDelete:
 			return m.updateConfirmDelete(msg)
+		case accountsModeLedger:
+			return m.updateLedger(msg)
 		}
 	}
 
-	if m.mode == accountsModeList {
+	switch m.mode {
+	case accountsModeList:
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
+		return m, cmd
+	case accountsModeLedger:
+		var cmd tea.Cmd
+		m.ledgerTable, cmd = m.ledgerTable.Update(msg)
 		return m, cmd
 	}
 	return m, nil
@@ -179,9 +244,31 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.mode = accountsModeConfirmDelete
 		return m, nil
+	case "enter":
+		row := m.table.Cursor()
+		if row < 0 || row >= len(m.rows) {
+			return m, nil
+		}
+		m.mode = accountsModeLedger
+		m.ledgerAccount = m.rows[row]
+		m.ledgerTable.SetRows(nil)
+		m.err = ""
+		return m, m.loadLedger(m.ledgerAccount.ID)
 	}
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
+func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = accountsModeList
+		m.err = ""
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.ledgerTable, cmd = m.ledgerTable.Update(msg)
 	return m, cmd
 }
 
@@ -308,7 +395,10 @@ func parentSummary(parentID *int64, accounts []client.Account) string {
 // immediately followed by its own children, and accounts at the same
 // level (no parent, or the same parent) are ordered by ID.
 func accountsToRows(accounts []client.Account) []table.Row {
-	nodes := orderAccountsAsTree(accounts)
+	return nodesToRows(orderAccountsAsTree(accounts))
+}
+
+func nodesToRows(nodes []accountTreeNode) []table.Row {
 	rows := make([]table.Row, 0, len(nodes))
 	for _, node := range nodes {
 		a := node.account
@@ -316,12 +406,8 @@ func accountsToRows(accounts []client.Account) []table.Row {
 		if a.Code != nil {
 			code = *a.Code
 		}
-		parent := ""
-		if a.ParentID != nil {
-			parent = strconv.FormatInt(*a.ParentID, 10)
-		}
 		name := strings.Repeat("  ", node.depth) + a.Name
-		rows = append(rows, table.Row{strconv.FormatInt(a.ID, 10), code, name, parent})
+		rows = append(rows, table.Row{strconv.FormatInt(a.ID, 10), code, name, rightAlign(formatCents(a.Balance), moneyColumnWidth)})
 	}
 	return rows
 }
@@ -388,6 +474,26 @@ func sortAccountsByID(accounts []client.Account) {
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID < accounts[j].ID })
 }
 
+// rightAlign right-justifies s within width, for "Value"/"Balance" table
+// cells (bubbles' table has no per-column alignment option, and left-
+// aligns cell content by default).
+func rightAlign(s string, width int) string {
+	return fmt.Sprintf("%*s", width, s)
+}
+
+func ledgerToRows(entries []client.LedgerEntry) []table.Row {
+	rows := make([]table.Row, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, table.Row{
+			e.Timestamp.Local().Format(timestampLayout),
+			e.Description,
+			rightAlign(formatCents(e.Value), moneyColumnWidth),
+			rightAlign(formatCents(e.Balance), moneyColumnWidth),
+		})
+	}
+	return rows
+}
+
 func (m accountsModel) View() string {
 	var b strings.Builder
 
@@ -417,6 +523,10 @@ func (m accountsModel) View() string {
 		b.WriteString(m.table.View())
 		b.WriteString("\n\n")
 		b.WriteString(errorStyle.Render("Delete selected account? (y/n)"))
+	case accountsModeLedger:
+		b.WriteString(formLabelStyle.Render(fmt.Sprintf("Transactions for #%d %s", m.ledgerAccount.ID, m.ledgerAccount.Name)))
+		b.WriteString("\n\n")
+		b.WriteString(m.ledgerTable.View())
 	default:
 		b.WriteString(m.table.View())
 	}

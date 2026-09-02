@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
@@ -51,22 +53,40 @@ func typeString(m accountsModel, s string) accountsModel {
 	return m
 }
 
+func TestRightAlign(t *testing.T) {
+	if got := rightAlign("10.00", 12); got != strings.Repeat(" ", 7)+"10.00" {
+		t.Errorf("rightAlign(%q, 12) = %q", "10.00", got)
+	}
+	if got := rightAlign("", 12); got != strings.Repeat(" ", 12) {
+		t.Errorf("rightAlign(\"\", 12) = %q", got)
+	}
+	if len(rightAlign("10.00", 12)) != 12 {
+		t.Errorf("rightAlign result length = %d, want 12", len(rightAlign("10.00", 12)))
+	}
+	// Content longer than width is left as is, not truncated (the table's
+	// own rendering already handles overflow safely).
+	if got := rightAlign("12345678901234", 12); got != "12345678901234" {
+		t.Errorf("rightAlign of an over-width string should be unchanged, got %q", got)
+	}
+}
+
 func TestAccountsToRows(t *testing.T) {
 	code := "1000"
 	parent := int64(2)
 	rows := accountsToRows([]client.Account{
-		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent},
-		{ID: 2, Name: "Assets"},
+		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balance: -500},
+		{ID: 2, Name: "Assets", Balance: 1000},
 	})
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
 	// Assets (the root) comes first, followed immediately by its child
-	// Cash, indented.
-	if got, want := rows[0], (table.Row{"2", "", "Assets", ""}); !reflect.DeepEqual(got, want) {
+	// Cash, indented. The balance column replaces the parent column, and
+	// its value is right-aligned within moneyColumnWidth.
+	if got, want := rows[0], (table.Row{"2", "", "Assets", rightAlign("10.00", moneyColumnWidth)}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", "2"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", rightAlign("-5.00", moneyColumnWidth)}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
 }
@@ -239,6 +259,174 @@ func TestAccountsModel_DKeyRequiresRows(t *testing.T) {
 	}
 }
 
+func TestLedgerToRows(t *testing.T) {
+	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	rows := ledgerToRows([]client.LedgerEntry{
+		{Description: "Invoice #1", Value: 1000, Balance: 1000, Timestamp: ts},
+		{Description: "Invoice #2", Value: -300, Balance: 700, Timestamp: ts},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if got, want := rows[0], (table.Row{
+		ts.Local().Format(timestampLayout), "Invoice #1",
+		rightAlign("10.00", moneyColumnWidth), rightAlign("10.00", moneyColumnWidth),
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("row 0 = %v, want %v", got, want)
+	}
+	if got, want := rows[1], (table.Row{
+		ts.Local().Format(timestampLayout), "Invoice #2",
+		rightAlign("-3.00", moneyColumnWidth), rightAlign("7.00", moneyColumnWidth),
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("row 1 = %v, want %v", got, want)
+	}
+}
+
+func TestAccountsModel_EnterRequiresRows(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+
+	m, _ = m.Update(keyPress("enter"))
+	if m.mode != accountsModeList {
+		t.Fatalf("mode with no rows = %v, want accountsModeList (enter should be a no-op)", m.mode)
+	}
+}
+
+func TestAccountsModel_EnterOpensLedger(t *testing.T) {
+	var gotPath string
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode([]client.LedgerEntry{
+			{Description: "Invoice #1", Value: 1000, Balance: 1000},
+		})
+	})
+	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
+	m.table.SetRows(accountsToRows(m.rows))
+
+	m, cmd := m.Update(keyPress("enter"))
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+	if m.ledgerAccount.ID != 5 {
+		t.Fatalf("ledgerAccount = %+v, want ID 5", m.ledgerAccount)
+	}
+	if !m.Editing() {
+		t.Fatal("Editing() should be true while viewing the ledger")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to load the ledger")
+	}
+
+	msg := cmd()
+	loaded, ok := msg.(ledgerLoadedMsg)
+	if !ok || loaded.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotPath != "/accounts/5/transactions" {
+		t.Fatalf("requested path = %q, want /accounts/5/transactions", gotPath)
+	}
+
+	m, _ = m.Update(loaded)
+	if len(m.ledgerTable.Rows()) != 1 {
+		t.Fatalf("ledgerTable rows = %+v", m.ledgerTable.Rows())
+	}
+
+	// esc returns to the list.
+	m, _ = m.Update(keyPress("esc"))
+	if m.mode != accountsModeList {
+		t.Fatalf("mode after esc = %v, want accountsModeList", m.mode)
+	}
+}
+
+func TestAccountsModel_QKeyGoesBackFromLedger(t *testing.T) {
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]client.LedgerEntry{})
+	})
+	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
+	m.table.SetRows(accountsToRows(m.rows))
+
+	m, _ = m.Update(keyPress("enter"))
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+
+	m, _ = m.Update(keyPress("q"))
+	if m.mode != accountsModeList {
+		t.Fatalf("mode after q = %v, want accountsModeList (q should go back, not quit)", m.mode)
+	}
+}
+
+// TestAccountsModel_EnterUsesTreeOrder is a regression test: the table
+// displays accounts in tree order (a child right after its parent), which
+// can differ from the API's ID order whenever a child's ID doesn't
+// immediately follow its parent's — as here, where Juan (ID 4) is Cash's
+// child but Revenue (ID 2) has a lower ID. m.rows must be kept in the same
+// order as the table, or the cursor position resolves to the wrong
+// account (see also TestAccountsModel_DeleteUsesTreeOrder).
+func TestAccountsModel_EnterUsesTreeOrder(t *testing.T) {
+	var gotPath string
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode([]client.LedgerEntry{})
+	})
+
+	cashID := int64(1)
+	accounts := []client.Account{ // raw API order: Cash, Revenue, Juan
+		{ID: 1, Name: "Cash"},
+		{ID: 2, Name: "Revenue"},
+		{ID: 4, Name: "Juan", ParentID: &cashID},
+	}
+	m, _ = m.Update(accountsLoadedMsg{accounts: accounts})
+
+	// Tree order is Cash, Juan, Revenue: row 1 is Juan, not Revenue.
+	if m.rows[1].ID != 4 {
+		t.Fatalf("m.rows[1] = %+v, want Juan (ID 4)", m.rows[1])
+	}
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Juan)
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to load the ledger")
+	}
+	cmd()
+
+	if m.ledgerAccount.ID != 4 {
+		t.Fatalf("opened ledger for account %+v, want Juan (ID 4)", m.ledgerAccount)
+	}
+	if gotPath != "/accounts/4/transactions" {
+		t.Fatalf("requested path = %q, want /accounts/4/transactions", gotPath)
+	}
+}
+
+func TestAccountsModel_DeleteUsesTreeOrder(t *testing.T) {
+	var deletedID string
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletedID = r.URL.Path
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	cashID := int64(1)
+	accounts := []client.Account{ // raw API order: Cash, Revenue, Juan
+		{ID: 1, Name: "Cash"},
+		{ID: 2, Name: "Revenue"},
+		{ID: 4, Name: "Juan", ParentID: &cashID},
+	}
+	m, _ = m.Update(accountsLoadedMsg{accounts: accounts})
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Juan, in tree order)
+	m, _ = m.Update(keyPress("d"))
+	m, cmd := m.Update(keyPress("y"))
+	if cmd == nil {
+		t.Fatal("expected a delete command")
+	}
+	cmd()
+
+	if deletedID != "/accounts/4" {
+		t.Fatalf("deleted %q, want /accounts/4 (Juan)", deletedID)
+	}
+}
+
 func TestAccountsModel_CreateValidation(t *testing.T) {
 	called := false
 	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +587,13 @@ func TestAccountsModel_SetSize(t *testing.T) {
 		t.Errorf("table width = %d, want 80", got)
 	}
 	got20 := m.table.Height()
+
+	// The ledger view has its own two-line header above the table (unlike
+	// the plain list), so it needs two fewer rows to keep the footer
+	// visible on screen.
+	if got := m.ledgerTable.Height(); got != got20-2 {
+		t.Errorf("ledgerTable height = %d, want %d (table height - 2)", got, got20-2)
+	}
 
 	// Too small a height must not be applied, to keep the table usable.
 	m.SetSize(80, 3)

@@ -113,6 +113,46 @@ func TestApp_QuitKeys(t *testing.T) {
 	}
 }
 
+func TestApp_LedgerQKeyGoesBackInsteadOfQuitting(t *testing.T) {
+	m := newTestApp(t)
+	m.accounts.rows = []client.Account{{ID: 5, Name: "Cash"}}
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows))
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(App)
+	if m.accounts.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.accounts.mode)
+	}
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if isQuit(cmd) {
+		t.Fatal("\"q\" should not quit the app while viewing an account's ledger")
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m = updated.(App)
+	if m.accounts.mode != accountsModeList {
+		t.Fatalf("mode after q = %v, want accountsModeList (q should go back)", m.accounts.mode)
+	}
+}
+
+func TestApp_LedgerFooter(t *testing.T) {
+	m := newTestApp(t)
+	m.accounts.rows = []client.Account{{ID: 5, Name: "Cash"}}
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows))
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(App)
+
+	footer := m.footer()
+	if !strings.Contains(footer, "esc/q: back") {
+		t.Errorf("footer = %q, want it to mention esc/q: back", footer)
+	}
+	if strings.Contains(footer, "confirm field") {
+		t.Errorf("footer = %q, should not show the generic form-editing hint while viewing the ledger", footer)
+	}
+}
+
 func TestApp_KeysOnlyReachActiveTab(t *testing.T) {
 	m := newTestApp(t)
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // switch to Transactions
@@ -162,6 +202,9 @@ func TestApp_Footer(t *testing.T) {
 	m := newTestApp(t)
 	if strings.Contains(m.footer(), "confirm field") {
 		t.Error("footer should show the navigation help outside of an editing mode")
+	}
+	if !strings.Contains(m.footer(), "enter: view transactions") {
+		t.Error("footer should hint at viewing an account's transactions on the Accounts tab")
 	}
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
