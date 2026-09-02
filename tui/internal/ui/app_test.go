@@ -96,6 +96,8 @@ func TestApp_QuitKeys(t *testing.T) {
 	// "q" does not quit while editing (e.g. it's part of a typed value).
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"}) // enter create mode
 	m = updated.(App)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm "(none)" as parent, -> name field
+	m = updated.(App)
 	_, cmd = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if isQuit(cmd) {
 		t.Fatal("\"q\" should not quit while a form is open")

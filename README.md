@@ -136,6 +136,10 @@ curl -s localhost:30730/transactions -d '{
 `r` refreshes, and (in the Transactions view) `Enter` opens a transaction's
 entries. `Esc` cancels a form, `q` quits.
 
+When creating an account, the TUI first asks you to pick a parent from a
+list of the existing accounts (or "(none)", the default), then a name
+(required), then a code (optional).
+
 When creating a transaction, the TUI walks through description, timestamp,
 and then repeatedly asks for `(account_id, value)` entries until you
 confirm you're done; it will only submit once at least two entries are

@@ -32,6 +32,10 @@ func keyPress(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "backspace":
 		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	default:
@@ -49,19 +53,93 @@ func typeString(m accountsModel, s string) accountsModel {
 
 func TestAccountsToRows(t *testing.T) {
 	code := "1000"
-	parent := int64(7)
+	parent := int64(2)
 	rows := accountsToRows([]client.Account{
 		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent},
-		{ID: 2, Name: "Bank"},
+		{ID: 2, Name: "Assets"},
 	})
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
-	if got, want := rows[0], (table.Row{"1", "1000", "Cash", "7"}); !reflect.DeepEqual(got, want) {
+	// Assets (the root) comes first, followed immediately by its child
+	// Cash, indented.
+	if got, want := rows[0], (table.Row{"2", "", "Assets", ""}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"2", "", "Bank", ""}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", "2"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
+	}
+}
+
+func TestOrderAccountsAsTree(t *testing.T) {
+	assets := client.Account{ID: 1, Name: "Assets"}
+	liabilities := client.Account{ID: 2, Name: "Liabilities"}
+	cash := client.Account{ID: 3, Name: "Cash", ParentID: &assets.ID}
+	bank := client.Account{ID: 4, Name: "Bank", ParentID: &assets.ID}
+	pettyCash := client.Account{ID: 5, Name: "Petty Cash", ParentID: &cash.ID}
+
+	// Deliberately out of order and with siblings interleaved, to prove
+	// the tree walk (not input order) determines the result.
+	nodes := orderAccountsAsTree([]client.Account{bank, pettyCash, liabilities, cash, assets})
+
+	type want struct {
+		name  string
+		depth int
+	}
+	wants := []want{
+		{"Assets", 0},
+		{"Cash", 1},
+		{"Petty Cash", 2},
+		{"Bank", 1},
+		{"Liabilities", 0},
+	}
+	if len(nodes) != len(wants) {
+		t.Fatalf("got %d nodes, want %d: %+v", len(nodes), len(wants), nodes)
+	}
+	for i, w := range wants {
+		if nodes[i].account.Name != w.name || nodes[i].depth != w.depth {
+			t.Errorf("node %d = (%q, depth %d), want (%q, depth %d)",
+				i, nodes[i].account.Name, nodes[i].depth, w.name, w.depth)
+		}
+	}
+}
+
+func TestOrderAccountsAsTree_SiblingsSortedByID(t *testing.T) {
+	// Root accounts and a set of children both given out of ID order.
+	root := client.Account{ID: 10, Name: "Assets"}
+	c3 := client.Account{ID: 3, Name: "C", ParentID: &root.ID}
+	c1 := client.Account{ID: 1, Name: "A", ParentID: &root.ID}
+	c2 := client.Account{ID: 2, Name: "B", ParentID: &root.ID}
+	otherRoot := client.Account{ID: 5, Name: "Liabilities"}
+
+	nodes := orderAccountsAsTree([]client.Account{c3, otherRoot, root, c1, c2})
+
+	var gotIDs []int64
+	for _, n := range nodes {
+		gotIDs = append(gotIDs, n.account.ID)
+	}
+	want := []int64{5, 10, 1, 2, 3} // roots by ID (5, 10), then 10's children by ID
+	if len(gotIDs) != len(want) {
+		t.Fatalf("got %v, want %v", gotIDs, want)
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Fatalf("got %v, want %v", gotIDs, want)
+		}
+	}
+}
+
+func TestOrderAccountsAsTree_CycleIsNotDropped(t *testing.T) {
+	// a and b each claim the other as parent: neither is a root, so
+	// neither is reachable by the normal tree walk. Both must still show
+	// up (as a defensive fallback) instead of vanishing from the list.
+	aID, bID := int64(1), int64(2)
+	a := client.Account{ID: aID, Name: "A", ParentID: &bID}
+	b := client.Account{ID: bID, Name: "B", ParentID: &aID}
+
+	nodes := orderAccountsAsTree([]client.Account{a, b})
+	if len(nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2 (no account should be dropped): %+v", len(nodes), nodes)
 	}
 }
 
@@ -109,16 +187,40 @@ func TestAccountsModel_LoadAccountsError(t *testing.T) {
 
 func TestAccountsModel_NKeyEntersCreateMode(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
 	m, _ = m.Update(keyPress("n"))
 
 	if m.mode != accountsModeCreate {
 		t.Fatalf("mode = %v, want accountsModeCreate", m.mode)
 	}
-	if !m.inputs[fieldAccountName].Focused() {
-		t.Fatal("expected the name field to be focused")
+	if m.createStep != stepPickParent {
+		t.Fatalf("createStep = %v, want stepPickParent (parent is asked first)", m.createStep)
+	}
+	if got, want := m.parentPicker.Rows(), (parentPickerRows(m.rows)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parentPicker rows = %v, want %v", got, want)
+	}
+	if m.parentPicker.Cursor() != 0 {
+		t.Fatalf("parentPicker cursor = %d, want 0 (\"(none)\")", m.parentPicker.Cursor())
 	}
 	if !m.Editing() {
 		t.Fatal("Editing() should be true in create mode")
+	}
+}
+
+func TestSelectedParentID(t *testing.T) {
+	accounts := []client.Account{{ID: 10, Name: "Assets"}, {ID: 20, Name: "Liabilities"}}
+
+	if got := selectedParentID(0, accounts); got != nil {
+		t.Errorf("cursor 0 (\"(none)\") = %v, want nil", got)
+	}
+	if got := selectedParentID(1, accounts); got == nil || *got != 10 {
+		t.Errorf("cursor 1 = %v, want 10", got)
+	}
+	if got := selectedParentID(2, accounts); got == nil || *got != 20 {
+		t.Errorf("cursor 2 = %v, want 20", got)
+	}
+	if got := selectedParentID(3, accounts); got != nil {
+		t.Errorf("out-of-range cursor = %v, want nil", got)
 	}
 }
 
@@ -162,52 +264,78 @@ func TestAccountsModel_CreateValidation(t *testing.T) {
 	}
 }
 
-func TestAccountsModel_CreateInvalidParentID(t *testing.T) {
-	m := newTestAccountsModel(t, nil)
-	m, _ = m.Update(keyPress("n"))
-
-	m = typeString(m, "Cash")
-	m, _ = m.Update(keyPress("enter")) // -> code field
-	m, _ = m.Update(keyPress("enter")) // -> parent field
-	m = typeString(m, "abc")
-	m, _ = m.Update(keyPress("enter")) // submit
-
-	if m.err != "parent account ID must be a number" {
-		t.Fatalf("err = %q, want %q", m.err, "parent account ID must be a number")
-	}
-}
-
-func TestAccountsModel_CreateSubmitsAndReturnsToList(t *testing.T) {
-	var gotName string
+func TestAccountsModel_CreateWithParentSelection(t *testing.T) {
+	var gotAccount client.Account
 	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
-		var a client.Account
-		json.NewDecoder(r.Body).Decode(&a)
-		gotName = a.Name
+		json.NewDecoder(r.Body).Decode(&gotAccount)
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(client.Account{ID: 1, Name: a.Name})
+		json.NewEncoder(w).Encode(client.Account{ID: 3, Name: gotAccount.Name})
 	})
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
 	m, _ = m.Update(keyPress("n"))
+
+	// Row 0 is "(none)"; move down twice to land on account ID 2.
+	m, _ = m.Update(keyPress("down"))
+	m, _ = m.Update(keyPress("down"))
+	m, _ = m.Update(keyPress("enter"))
+
+	if m.createStep != stepAccountName {
+		t.Fatalf("createStep = %v, want stepAccountName", m.createStep)
+	}
+	if m.pendingParentID == nil || *m.pendingParentID != 2 {
+		t.Fatalf("pendingParentID = %v, want 2", m.pendingParentID)
+	}
+
 	m = typeString(m, "Cash")
-	m, _ = m.Update(keyPress("enter")) // -> code
-	m, _ = m.Update(keyPress("enter")) // -> parent
-	m, cmd := m.Update(keyPress("enter"))
+	m, cmd := m.Update(keyPress("enter")) // -> code
+	if m.createStep != stepAccountCode {
+		t.Fatalf("createStep = %v, want stepAccountCode", m.createStep)
+	}
+	m = typeString(m, "1000")
+	m, cmd = m.Update(keyPress("enter")) // submit
 	if cmd == nil {
 		t.Fatal("expected a command to submit the create request")
 	}
 
 	msg := cmd()
 	mutated, ok := msg.(accountMutatedMsg)
-	if !ok {
-		t.Fatalf("got %T, want accountMutatedMsg", msg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
 	}
-	if mutated.err != nil {
-		t.Fatalf("unexpected error: %v", mutated.err)
+	if gotAccount.Name != "Cash" || gotAccount.ParentID == nil || *gotAccount.ParentID != 2 {
+		t.Fatalf("API received %+v, want name=Cash parent=2", gotAccount)
 	}
-	if gotName != "Cash" {
-		t.Fatalf("API received name %q, want %q", gotName, "Cash")
+	if gotAccount.Code == nil || *gotAccount.Code != "1000" {
+		t.Fatalf("API received code %v, want \"1000\"", gotAccount.Code)
+	}
+}
+
+func TestAccountsModel_CreateDefaultsToNoParent(t *testing.T) {
+	var gotAccount client.Account
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotAccount)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(client.Account{ID: 1, Name: gotAccount.Name})
+	})
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("enter")) // confirm "(none)" as parent
+	m = typeString(m, "Cash")
+	m, _ = m.Update(keyPress("enter")) // -> code
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the create request")
 	}
 
-	m, cmd = m.Update(mutated)
+	msg := cmd()
+	if mutated, ok := msg.(accountMutatedMsg); !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotAccount.ParentID != nil {
+		t.Fatalf("ParentID = %v, want nil", gotAccount.ParentID)
+	}
+
+	m, cmd = m.Update(accountMutatedMsg{})
 	if m.mode != accountsModeList {
 		t.Fatalf("mode = %v, want accountsModeList", m.mode)
 	}
