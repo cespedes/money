@@ -12,7 +12,9 @@ A small double-entry accounting application, made of three parts:
 
 - **Accounts** have a `name`, an optional `code`, and an optional `parent_id`
   pointing to another account, so accounts can be organized into a hierarchy
-  (a chart of accounts).
+  (a chart of accounts). The API also reports each account's `balance`: the
+  sum of that account's own transaction entries, not including any child
+  accounts'.
 - **Transactions** have a `timestamp`, a `description`, and a list of
   **entries**, each an `(account_id, value)` pair. The values of a
   transaction's entries must always sum to zero (double-entry bookkeeping):
@@ -107,6 +109,7 @@ All endpoints accept and return JSON.
 | GET    | `/accounts/{id}`    | Get an account                            |
 | PUT    | `/accounts/{id}`    | Update an account                         |
 | DELETE | `/accounts/{id}`    | Delete an account                         |
+| GET    | `/accounts/{id}/transactions` | List an account's ledger (see below) |
 | GET    | `/transactions`     | List transactions (with their entries)    |
 | POST   | `/transactions`     | Create a transaction (entries must sum to zero) |
 | GET    | `/transactions/{id}`| Get a transaction (with its entries)      |
@@ -129,12 +132,18 @@ curl -s localhost:30730/transactions -d '{
 }'
 ```
 
+`GET /accounts/{id}/transactions` returns that account's ledger: every
+transaction with an entry on it, in timestamp order, with that account's
+own value in the transaction and its running balance through that point —
+e.g. `[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "value": 1000, "balance": 1000}]`.
+
 ## TUI
 
 `Tab` switches between the Accounts and Transactions views. Within a view:
 `↑`/`↓` navigate, `n` creates a new record, `d` deletes the selected one,
-`r` refreshes, and (in the Transactions view) `Enter` opens a transaction's
-entries. `Esc` cancels a form, `q` quits.
+`r` refreshes, `Enter` opens a transaction's entries (in the Transactions
+view) or an account's ledger (in the Accounts view). `Esc` cancels a form
+or backs out of a ledger/detail view, `q` quits.
 
 When creating an account, the TUI first asks you to pick a parent from a
 list of the existing accounts (or "(none)", the default), then a name

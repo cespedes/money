@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"money/api/internal/models"
 )
@@ -100,6 +101,85 @@ func TestCreateAccount_DuplicateCode(t *testing.T) {
 	}
 	if body["error"] != "account code already in use" {
 		t.Fatalf("duplicate code: body = %v", body)
+	}
+}
+
+func TestAccountBalance(t *testing.T) {
+	h := newTestHandler(t)
+
+	var cash, revenue models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash"}, &cash)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Revenue"}, &revenue)
+	if cash.Balance != 0 {
+		t.Fatalf("balance of a brand new account = %d, want 0", cash.Balance)
+	}
+
+	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Invoice #1",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 1000},
+			{AccountID: revenue.ID, Value: -1000},
+		},
+	}, nil)
+
+	var got models.Account
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &got)
+	if got.Balance != 1000 {
+		t.Fatalf("balance via GET /accounts/{id} = %d, want 1000", got.Balance)
+	}
+
+	var list []models.Account
+	do(t, h, http.MethodGet, "/accounts", nil, &list)
+	for _, a := range list {
+		if a.ID == cash.ID && a.Balance != 1000 {
+			t.Fatalf("balance via GET /accounts = %d, want 1000", a.Balance)
+		}
+	}
+}
+
+func TestAccountLedger(t *testing.T) {
+	h := newTestHandler(t)
+
+	var cash, revenue models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash"}, &cash)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Revenue"}, &revenue)
+
+	rec := do(t, h, http.MethodGet, "/accounts/999999/transactions", nil, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("ledger of a missing account: status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+		Timestamp:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+		Description: "Invoice #1",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 1000},
+			{AccountID: revenue.ID, Value: -1000},
+		},
+	}, nil)
+	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+		Timestamp:   time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC),
+		Description: "Invoice #2",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 500},
+			{AccountID: revenue.ID, Value: -500},
+		},
+	}, nil)
+
+	var ledger []models.LedgerEntry
+	rec = do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d/transactions", cash.ID), nil, &ledger)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(ledger) != 2 {
+		t.Fatalf("got %d entries, want 2: %+v", len(ledger), ledger)
+	}
+	if ledger[0].Description != "Invoice #1" || ledger[0].Value != 1000 || ledger[0].Balance != 1000 {
+		t.Errorf("entry 0 = %+v", ledger[0])
+	}
+	if ledger[1].Description != "Invoice #2" || ledger[1].Value != 500 || ledger[1].Balance != 1500 {
+		t.Errorf("entry 1 = %+v", ledger[1])
 	}
 }
 

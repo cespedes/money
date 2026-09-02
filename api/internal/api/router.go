@@ -22,6 +22,7 @@ func NewRouter(s *store.Store) http.Handler {
 	mux.HandleFunc("GET /accounts/{id}", h.getAccount)
 	mux.HandleFunc("PUT /accounts/{id}", h.updateAccount)
 	mux.HandleFunc("DELETE /accounts/{id}", h.deleteAccount)
+	mux.HandleFunc("GET /accounts/{id}/transactions", h.listAccountLedger)
 
 	mux.HandleFunc("GET /transactions", h.listTransactions)
 	mux.HandleFunc("POST /transactions", h.createTransaction)

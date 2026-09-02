@@ -26,6 +26,127 @@ func createTwoAccounts(t *testing.T, s *store.Store) (cash, revenue models.Accou
 	return cash, revenue
 }
 
+func TestAccountStore_Balance(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+
+	// No entries yet: balance is 0, not NULL.
+	got, err := s.Accounts.Get(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Balance != 0 {
+		t.Fatalf("balance with no entries = %d, want 0", got.Balance)
+	}
+
+	child, err := s.Accounts.Create(ctx, models.Account{Name: "Petty Cash", ParentID: &cash.ID})
+	if err != nil {
+		t.Fatalf("create child account: %v", err)
+	}
+
+	for _, txn := range []models.Transaction{
+		{Timestamp: time.Now(), Description: "Invoice #1", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 1000}, {AccountID: revenue.ID, Value: -1000},
+		}},
+		{Timestamp: time.Now(), Description: "Invoice #2", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 500}, {AccountID: revenue.ID, Value: -500},
+		}},
+		{Timestamp: time.Now(), Description: "Move to petty cash", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: -200}, {AccountID: child.ID, Value: 200},
+		}},
+	} {
+		if _, err := s.Transactions.Create(ctx, txn); err != nil {
+			t.Fatalf("create %q: %v", txn.Description, err)
+		}
+	}
+
+	got, err = s.Accounts.Get(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Balance != 1300 { // 1000 + 500 - 200
+		t.Fatalf("cash balance = %d, want 1300", got.Balance)
+	}
+
+	// A parent's balance is only its own entries, not its children's.
+	list, err := s.Accounts.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	balances := make(map[int64]int64, len(list))
+	for _, a := range list {
+		balances[a.ID] = a.Balance
+	}
+	if balances[cash.ID] != 1300 {
+		t.Fatalf("List: cash balance = %d, want 1300", balances[cash.ID])
+	}
+	if balances[child.ID] != 200 {
+		t.Fatalf("List: petty cash balance = %d, want 200 (not rolled up into cash)", balances[child.ID])
+	}
+	if balances[revenue.ID] != -1500 {
+		t.Fatalf("List: revenue balance = %d, want -1500", balances[revenue.ID])
+	}
+}
+
+func TestAccountStore_Ledger(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+
+	if _, err := s.Accounts.Ledger(ctx, 999999); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Ledger of a missing account: got %v, want ErrNotFound", err)
+	}
+
+	entries, err := s.Accounts.Ledger(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Ledger with no transactions: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Ledger with no transactions = %+v, want empty", entries)
+	}
+
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 1, 3, 10, 0, 0, 0, time.UTC)
+
+	// Deliberately created out of timestamp order, to prove the ledger is
+	// sorted by timestamp rather than creation/insert order.
+	for _, txn := range []models.Transaction{
+		{Timestamp: t2, Description: "Second", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 500}, {AccountID: revenue.ID, Value: -500},
+		}},
+		{Timestamp: t1, Description: "First", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: 1000}, {AccountID: revenue.ID, Value: -1000},
+		}},
+		{Timestamp: t3, Description: "Third", Entries: []models.Entry{
+			{AccountID: cash.ID, Value: -300}, {AccountID: revenue.ID, Value: 300},
+		}},
+	} {
+		if _, err := s.Transactions.Create(ctx, txn); err != nil {
+			t.Fatalf("create %q: %v", txn.Description, err)
+		}
+	}
+
+	entries, err = s.Accounts.Ledger(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Ledger: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries, want 3: %+v", len(entries), entries)
+	}
+
+	wantDesc := []string{"First", "Second", "Third"}
+	wantValue := []int64{1000, 500, -300}
+	wantBalance := []int64{1000, 1500, 1200}
+	for i, e := range entries {
+		if e.Description != wantDesc[i] || e.Value != wantValue[i] || e.Balance != wantBalance[i] {
+			t.Errorf("entry %d = %+v, want description=%s value=%d balance=%d",
+				i, e, wantDesc[i], wantValue[i], wantBalance[i])
+		}
+	}
+}
+
 func TestTransactionStore_CreateGetListDelete(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

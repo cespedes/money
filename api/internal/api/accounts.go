@@ -42,6 +42,24 @@ func (h *Handler) getAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, account)
 }
 
+func (h *Handler) listAccountLedger(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	entries, err := h.store.Accounts.Ledger(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
 func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 	var a models.Account
 	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
