@@ -16,7 +16,11 @@ type tab int
 const (
 	tabAccounts tab = iota
 	tabTransactions
+	tabCurrencies
+	numTabs
 )
+
+var tabLabels = [numTabs]string{"Accounts", "Transactions", "Currencies"}
 
 type App struct {
 	client *client.Client
@@ -27,6 +31,7 @@ type App struct {
 
 	accounts     accountsModel
 	transactions transactionsModel
+	currencies   currenciesModel
 }
 
 func New(c *client.Client) App {
@@ -34,11 +39,12 @@ func New(c *client.Client) App {
 		client:       c,
 		accounts:     newAccountsModel(c),
 		transactions: newTransactionsModel(c),
+		currencies:   newCurrenciesModel(c),
 	}
 }
 
 func (m App) Init() tea.Cmd {
-	return tea.Batch(m.accounts.Init(), m.transactions.Init())
+	return tea.Batch(m.accounts.Init(), m.transactions.Init(), m.currencies.Init())
 }
 
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -47,6 +53,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.accounts.SetSize(msg.Width, msg.Height-6)
 		m.transactions.SetSize(msg.Width, msg.Height-6)
+		m.currencies.SetSize(msg.Width, msg.Height-6)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -57,44 +64,52 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.currentEditing() {
 				return m, tea.Quit
 			}
-		case "tab", "shift+tab":
+		case "tab":
 			if !m.currentEditing() {
-				if m.active == tabAccounts {
-					m.active = tabTransactions
-				} else {
-					m.active = tabAccounts
-				}
+				m.active = (m.active + 1) % numTabs
+				return m, nil
+			}
+		case "shift+tab":
+			if !m.currentEditing() {
+				m.active = (m.active + numTabs - 1) % numTabs
 				return m, nil
 			}
 		}
 
-		// Keyboard input only goes to the active tab; the other tab is
+		// Keyboard input only goes to the active tab; the other tabs are
 		// not visible and must not react to keystrokes meant for this one.
 		var cmd tea.Cmd
-		if m.active == tabAccounts {
+		switch m.active {
+		case tabAccounts:
 			m.accounts, cmd = m.accounts.Update(msg)
-		} else {
+		case tabTransactions:
 			m.transactions, cmd = m.transactions.Update(msg)
+		case tabCurrencies:
+			m.currencies, cmd = m.currencies.Update(msg)
 		}
 		return m, cmd
 	}
 
 	// Any other message (async load results, cursor blinks, ...) must
-	// reach both models regardless of which tab is active, or the
-	// inactive tab would never see the results of its own commands
-	// (e.g. its initial data load).
-	var cmd1, cmd2 tea.Cmd
+	// reach every tab regardless of which is active, or an inactive tab
+	// would never see the results of its own commands (e.g. its initial
+	// data load).
+	var cmd1, cmd2, cmd3 tea.Cmd
 	m.accounts, cmd1 = m.accounts.Update(msg)
 	m.transactions, cmd2 = m.transactions.Update(msg)
-	cmd := tea.Batch(cmd1, cmd2)
-	return m, cmd
+	m.currencies, cmd3 = m.currencies.Update(msg)
+	return m, tea.Batch(cmd1, cmd2, cmd3)
 }
 
 func (m App) currentEditing() bool {
-	if m.active == tabAccounts {
+	switch m.active {
+	case tabAccounts:
 		return m.accounts.Editing()
+	case tabTransactions:
+		return m.transactions.Editing()
+	default:
+		return m.currencies.Editing()
 	}
-	return m.transactions.Editing()
 }
 
 func (m App) View() tea.View {
@@ -103,8 +118,7 @@ func (m App) View() tea.View {
 	b.WriteString(titleStyle.Render("Money — Accounting TUI"))
 	b.WriteString("\n\n")
 
-	tabs := []string{"Accounts", "Transactions"}
-	for i, t := range tabs {
+	for i, t := range tabLabels {
 		if tab(i) == m.active {
 			b.WriteString(tabActiveStyle.Render(t))
 		} else {
@@ -113,31 +127,53 @@ func (m App) View() tea.View {
 	}
 	b.WriteString("\n\n")
 
-	if m.active == tabAccounts {
+	switch m.active {
+	case tabAccounts:
 		b.WriteString(m.accounts.View())
-	} else {
+	case tabTransactions:
 		b.WriteString(m.transactions.View())
+	case tabCurrencies:
+		b.WriteString(m.currencies.View())
 	}
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(m.footer()))
 
-	v := tea.NewView(b.String())
+	content := b.String()
+	switch {
+	case m.active == tabAccounts && m.accounts.mode == accountsModeCreate:
+		content = overlayCentered(content, m.accounts.createPopup(), m.width, m.height)
+	case m.active == tabCurrencies && m.currencies.mode == currenciesModeCreate:
+		content = overlayCentered(content, m.currencies.createPopup(), m.width, m.height)
+	}
+
+	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
 }
 
 func (m App) footer() string {
-	if m.active == tabAccounts && m.accounts.mode == accountsModeLedger {
-		return "↑/↓: navigate  •  esc/q: back"
+	switch m.active {
+	case tabAccounts:
+		switch m.accounts.mode {
+		case accountsModeLedger:
+			return "↑/↓: navigate  •  esc/q: back"
+		case accountsModeCreate:
+			return "tab/←/→: switch field  •  ↑/↓: choose parent  •  enter: create  •  esc: cancel"
+		}
+	case tabCurrencies:
+		if m.currencies.mode == currenciesModeCreate {
+			return "tab/←/→: switch field  •  ↑/↓: change value  •  enter: create  •  esc: cancel"
+		}
 	}
 	if m.currentEditing() {
 		return "enter: confirm field  •  esc: cancel"
 	}
 	base := "tab: switch view  •  ↑/↓: navigate  •  r: refresh  •  n: new  •  d: delete  •  q: quit"
-	if m.active == tabAccounts {
+	switch m.active {
+	case tabAccounts:
 		base = fmt.Sprintf("%s  •  enter: view transactions", base)
-	} else {
+	case tabTransactions:
 		base = fmt.Sprintf("%s  •  enter: view details", base)
 	}
 	return base

@@ -57,6 +57,26 @@ func TestApp_TabSwitchesActiveView(t *testing.T) {
 	}
 }
 
+func TestApp_TabCyclesThroughAllTabs(t *testing.T) {
+	m := newTestApp(t)
+
+	order := []tab{tabTransactions, tabCurrencies, tabAccounts}
+	for i, want := range order {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		m = updated.(App)
+		if m.active != want {
+			t.Fatalf("after tab #%d: active = %v, want %v", i+1, m.active, want)
+		}
+	}
+
+	// shift+tab cycles the other way.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	m = updated.(App)
+	if m.active != tabCurrencies {
+		t.Fatalf("active after shift+tab = %v, want tabCurrencies", m.active)
+	}
+}
+
 func TestApp_TabIsSwallowedWhileEditing(t *testing.T) {
 	m := newTestApp(t)
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"}) // enter create mode on Accounts
@@ -94,9 +114,9 @@ func TestApp_QuitKeys(t *testing.T) {
 	}
 
 	// "q" does not quit while editing (e.g. it's part of a typed value).
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"}) // enter create mode
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"}) // enter create mode, focus on Parent
 	m = updated.(App)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm "(none)" as parent, -> name field
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // -> Name
 	m = updated.(App)
 	_, cmd = m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	if isQuit(cmd) {
@@ -116,7 +136,7 @@ func TestApp_QuitKeys(t *testing.T) {
 func TestApp_LedgerQKeyGoesBackInsteadOfQuitting(t *testing.T) {
 	m := newTestApp(t)
 	m.accounts.rows = []client.Account{{ID: 5, Name: "Cash"}}
-	m.accounts.table.SetRows(accountsToRows(m.accounts.rows))
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows, nil))
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(App)
@@ -139,7 +159,7 @@ func TestApp_LedgerQKeyGoesBackInsteadOfQuitting(t *testing.T) {
 func TestApp_LedgerFooter(t *testing.T) {
 	m := newTestApp(t)
 	m.accounts.rows = []client.Account{{ID: 5, Name: "Cash"}}
-	m.accounts.table.SetRows(accountsToRows(m.accounts.rows))
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows, nil))
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(App)
@@ -155,6 +175,7 @@ func TestApp_LedgerFooter(t *testing.T) {
 
 func TestApp_KeysOnlyReachActiveTab(t *testing.T) {
 	m := newTestApp(t)
+	m.transactions.currencies = []client.Currency{testUSD}    // "n" refuses with none loaded
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // switch to Transactions
 	m = updated.(App)
 
@@ -198,6 +219,77 @@ func TestApp_View(t *testing.T) {
 	}
 }
 
+// TestApp_CreatePopupOverlaysBackground checks that opening the
+// new-account form composites a pop-up over the accounts list, rather
+// than replacing it: both the list and the pop-up must show up in the
+// same rendered view.
+func TestApp_CreatePopupOverlaysBackground(t *testing.T) {
+	m := newTestApp(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(App)
+
+	m.accounts.rows = []client.Account{{ID: 1, Name: "Assets"}}
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows, nil))
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m = updated.(App)
+
+	v := m.View()
+	if !strings.Contains(v.Content, "New account") {
+		t.Errorf("view should contain the pop-up, got:\n%s", v.Content)
+	}
+	if !strings.Contains(v.Content, "Assets") {
+		t.Errorf("view should still show the accounts list behind the pop-up, got:\n%s", v.Content)
+	}
+	if !strings.Contains(v.Content, "Money") {
+		t.Errorf("view should still show the app title behind the pop-up, got:\n%s", v.Content)
+	}
+}
+
+// TestApp_CurrenciesPopupOverlaysBackground mirrors
+// TestApp_CreatePopupOverlaysBackground for the Currencies tab.
+func TestApp_CurrenciesPopupOverlaysBackground(t *testing.T) {
+	m := newTestApp(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(App)
+
+	m.currencies.rows = []client.Currency{{ID: 1, Name: "USD"}}
+	m.currencies.table.SetRows(currenciesToRows(m.currencies.rows))
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // -> Transactions
+	m = updated.(App)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // -> Currencies
+	m = updated.(App)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m = updated.(App)
+
+	v := m.View()
+	if !strings.Contains(v.Content, "New currency") {
+		t.Errorf("view should contain the pop-up, got:\n%s", v.Content)
+	}
+	if !strings.Contains(v.Content, "USD") {
+		t.Errorf("view should still show the currencies list behind the pop-up, got:\n%s", v.Content)
+	}
+}
+
+func TestApp_CurrenciesFooter(t *testing.T) {
+	m := newTestApp(t)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // -> Transactions
+	m = updated.(App)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // -> Currencies
+	m = updated.(App)
+
+	if strings.Contains(m.footer(), "enter:") {
+		t.Errorf("footer = %q, currencies list has no enter-drilldown", m.footer())
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m = updated.(App)
+	if !strings.Contains(m.footer(), "switch field") {
+		t.Errorf("footer = %q, want it to hint at switching fields while the new-currency form is open", m.footer())
+	}
+}
+
 func TestApp_Footer(t *testing.T) {
 	m := newTestApp(t)
 	if strings.Contains(m.footer(), "confirm field") {
@@ -209,7 +301,7 @@ func TestApp_Footer(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	m = updated.(App)
-	if !strings.Contains(m.footer(), "confirm field") {
-		t.Error("footer should show the editing help while a form is open")
+	if !strings.Contains(m.footer(), "switch field") {
+		t.Error("footer should hint at switching fields while the new-account form is open")
 	}
 }

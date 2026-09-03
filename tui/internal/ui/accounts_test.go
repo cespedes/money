@@ -53,6 +53,21 @@ func typeString(m accountsModel, s string) accountsModel {
 	return m
 }
 
+func TestPadOrTruncate(t *testing.T) {
+	if got := padOrTruncate("Cash", 10); got != "Cash      " {
+		t.Errorf("padOrTruncate(%q, 10) = %q", "Cash", got)
+	}
+	if got := padOrTruncate("", 5); got != "     " {
+		t.Errorf("padOrTruncate(\"\", 5) = %q", got)
+	}
+	if got, want := padOrTruncate("A very long account name", 10), "A very lon"; got != want {
+		t.Errorf("padOrTruncate of an over-width string = %q, want %q (truncated)", got, want)
+	}
+	if got := len(padOrTruncate("x", 8)); got != 8 {
+		t.Errorf("padOrTruncate result length = %d, want 8", got)
+	}
+}
+
 func TestRightAlign(t *testing.T) {
 	if got := rightAlign("10.00", 12); got != strings.Repeat(" ", 7)+"10.00" {
 		t.Errorf("rightAlign(%q, 12) = %q", "10.00", got)
@@ -70,24 +85,39 @@ func TestRightAlign(t *testing.T) {
 	}
 }
 
+var testUSD = client.Currency{ID: 9, Name: "USD", SymbolPosition: "before", DecimalSeparator: ".", DecimalPlaces: 2}
+var testCurrencies = currencyByID{testUSD.ID: testUSD}
+
 func TestAccountsToRows(t *testing.T) {
 	code := "1000"
 	parent := int64(2)
 	rows := accountsToRows([]client.Account{
-		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balance: -500},
-		{ID: 2, Name: "Assets", Balance: 1000},
-	})
+		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: -500}}},
+		{ID: 2, Name: "Assets", Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: 1000}}},
+	}, testCurrencies)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
 	// Assets (the root) comes first, followed immediately by its child
 	// Cash, indented. The balance column replaces the parent column, and
-	// its value is right-aligned within moneyColumnWidth.
-	if got, want := rows[0], (table.Row{"2", "", "Assets", rightAlign("10.00", moneyColumnWidth)}); !reflect.DeepEqual(got, want) {
+	// shows each balance formatted per its own currency.
+	if got, want := rows[0], (table.Row{"2", "", "Assets", "USD10.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", rightAlign("-5.00", moneyColumnWidth)}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
+	}
+}
+
+func TestFormatBalances(t *testing.T) {
+	if got := formatBalances(nil, testCurrencies); got != "" {
+		t.Errorf("formatBalances(nil) = %q, want empty", got)
+	}
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolPosition: "after", SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	currencies := currencyByID{testUSD.ID: testUSD, eur.ID: eur}
+	got := formatBalances([]client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: 1000}, {CurrencyID: eur.ID, Amount: 500}}, currencies)
+	if want := "USD10.00, 5,00 EUR"; got != want {
+		t.Errorf("formatBalances = %q, want %q", got, want)
 	}
 }
 
@@ -168,10 +198,10 @@ func TestAccountsModel_LoadAccounts(t *testing.T) {
 		json.NewEncoder(w).Encode([]client.Account{{ID: 1, Name: "Cash"}})
 	})
 
-	msg := m.Init()()
+	msg := m.loadAccounts()
 	loaded, ok := msg.(accountsLoadedMsg)
 	if !ok {
-		t.Fatalf("Init(): got %T, want accountsLoadedMsg", msg)
+		t.Fatalf("loadAccounts(): got %T, want accountsLoadedMsg", msg)
 	}
 	if loaded.err != nil {
 		t.Fatalf("Init(): unexpected error %v", loaded.err)
@@ -194,7 +224,7 @@ func TestAccountsModel_LoadAccountsError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	msg := m.Init()()
+	msg := m.loadAccounts()
 	loaded := msg.(accountsLoadedMsg)
 	if loaded.err == nil {
 		t.Fatal("expected an error")
@@ -213,17 +243,170 @@ func TestAccountsModel_NKeyEntersCreateMode(t *testing.T) {
 	if m.mode != accountsModeCreate {
 		t.Fatalf("mode = %v, want accountsModeCreate", m.mode)
 	}
-	if m.createStep != stepPickParent {
-		t.Fatalf("createStep = %v, want stepPickParent (parent is asked first)", m.createStep)
-	}
-	if got, want := m.parentPicker.Rows(), (parentPickerRows(m.rows)); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parentPicker rows = %v, want %v", got, want)
+	if m.createFocus != focusParent {
+		t.Fatalf("createFocus = %v, want focusParent", m.createFocus)
 	}
 	if m.parentPicker.Cursor() != 0 {
 		t.Fatalf("parentPicker cursor = %d, want 0 (\"(none)\")", m.parentPicker.Cursor())
 	}
+	if got, want := m.parentPicker.Rows(), parentDropdownRows(m.rows); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parentPicker rows = %v, want %v", got, want)
+	}
 	if !m.Editing() {
 		t.Fatal("Editing() should be true in create mode")
+	}
+}
+
+func TestAccountsModel_CreateFocusCyclesWithTabAndArrows(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m, _ = m.Update(keyPress("n"))
+
+	order := []createFocus{focusParent, focusName, focusCode, focusParent}
+	for i, want := range order[1:] {
+		m, _ = m.Update(keyPress("tab"))
+		if m.createFocus != want {
+			t.Fatalf("after tab #%d: createFocus = %v, want %v", i+1, m.createFocus, want)
+		}
+	}
+
+	// shift+tab and left both move backward.
+	m, _ = m.Update(keyPress("shift+tab"))
+	if m.createFocus != focusCode {
+		t.Fatalf("after shift+tab: createFocus = %v, want focusCode", m.createFocus)
+	}
+	m, _ = m.Update(keyPress("left"))
+	if m.createFocus != focusName {
+		t.Fatalf("after left: createFocus = %v, want focusName", m.createFocus)
+	}
+	m, _ = m.Update(keyPress("right"))
+	if m.createFocus != focusCode {
+		t.Fatalf("after right: createFocus = %v, want focusCode", m.createFocus)
+	}
+}
+
+func TestAccountsModel_CreateParentFieldUpDown(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
+	m, _ = m.Update(keyPress("n")) // focus starts on Parent
+
+	m, _ = m.Update(keyPress("down"))
+	if got := m.parentPicker.Cursor(); got != 1 {
+		t.Fatalf("cursor after down = %d, want 1", got)
+	}
+	m, _ = m.Update(keyPress("down"))
+	if got := m.parentPicker.Cursor(); got != 2 {
+		t.Fatalf("cursor after down,down = %d, want 2", got)
+	}
+	m, _ = m.Update(keyPress("down")) // clamped: no fourth option to move to
+	if got := m.parentPicker.Cursor(); got != 2 {
+		t.Fatalf("cursor should stay clamped at the last option, got %d", got)
+	}
+	m, _ = m.Update(keyPress("up"))
+	m, _ = m.Update(keyPress("up"))
+	m, _ = m.Update(keyPress("up")) // clamped at 0, not negative
+	if got := m.parentPicker.Cursor(); got != 0 {
+		t.Fatalf("cursor should stay clamped at 0, got %d", got)
+	}
+
+	// up/down only affect the Parent field.
+	m, _ = m.Update(keyPress("down"))
+	m, _ = m.Update(keyPress("tab")) // -> Name
+	m, _ = m.Update(keyPress("down"))
+	if got := m.parentPicker.Cursor(); got != 1 {
+		t.Fatalf("parentPicker cursor changed while Name was focused: %d", got)
+	}
+}
+
+// TestAccountsModel_CreatePopupShowsAllParentOptions verifies the
+// dropdown lists every account at once when they all fit in the window
+// (see TestSyncParentPickerHeight for the "doesn't all fit" case).
+func TestAccountsModel_CreatePopupShowsAllParentOptions(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 30)
+	m.rows = []client.Account{
+		{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}, {ID: 3, Name: "Equity"},
+	}
+	m, _ = m.Update(keyPress("n")) // focus starts on Parent
+
+	popup := m.createPopup()
+	for _, want := range []string{"(none)", "Assets", "Liabilities", "Equity"} {
+		if !strings.Contains(popup, want) {
+			t.Errorf("popup should list %q among the parent options, got:\n%s", want, popup)
+		}
+	}
+}
+
+func TestSyncParentPickerHeight(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+
+	// Plenty of room: every option (+1 for "(none)") fits. table.Model
+	// reserves one row of Height() for its own header, so the data-row
+	// viewport is len(m.rows)+1 (the "+1" being "(none)").
+	m.rows = make([]client.Account, 5)
+	m.SetSize(100, 30)
+	roomyHeight := m.parentPicker.Height()
+	if want := len(m.rows) + 1; roomyHeight != want {
+		t.Errorf("height with room to spare = %d, want %d (all options)", roomyHeight, want)
+	}
+
+	// A short window: capped to whatever fits, never so small the
+	// dropdown becomes useless, and clearly smaller than when there was
+	// room for everything.
+	m.SetSize(100, 11)
+	if got := m.parentPicker.Height(); got < 2 || got >= roomyHeight {
+		t.Errorf("height in a short window = %d, want it capped below %d but still usable", got, roomyHeight)
+	}
+}
+
+func TestAccountsModel_CreatePopup(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 20) // the table needs a known width to render row content
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Name
+	m = typeString(m, "Cash")
+
+	popup := m.createPopup()
+	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)", "Cash"} {
+		if !strings.Contains(popup, want) {
+			t.Errorf("popup should contain %q, got:\n%s", want, popup)
+		}
+	}
+
+	// The list view underneath must stay the accounts table, not the
+	// form, since the form is a separate pop-up composited on top of it
+	// (see overlayCentered).
+	if got := m.View(); !strings.Contains(got, "Assets") {
+		t.Errorf("View() should still render the accounts list under the pop-up, got:\n%s", got)
+	}
+
+	// Validation errors show inside the pop-up, not below the list.
+	m.inputs[fieldAccountName].SetValue("")
+	m, _ = m.Update(keyPress("enter")) // submit with an empty name
+	if m.err != "name is required" {
+		t.Fatalf("err = %q, want %q", m.err, "name is required")
+	}
+	if !strings.Contains(m.createPopup(), "name is required") {
+		t.Error("popup should include the validation error")
+	}
+	if strings.Contains(m.View(), "name is required") {
+		t.Error("the error should not also be duplicated below the background list")
+	}
+}
+
+func TestOverlayCentered(t *testing.T) {
+	bg := "background content\nline two"
+	if got := overlayCentered(bg, "popup", 0, 0); got != bg {
+		t.Errorf("with no known size, overlayCentered should return background unchanged, got %q", got)
+	}
+
+	got := overlayCentered(bg, "POPUP", 40, 10)
+	if !strings.Contains(got, "POPUP") {
+		t.Errorf("composited output should contain the popup content, got:\n%s", got)
+	}
+	if !strings.Contains(got, "background content") {
+		t.Errorf("composited output should still contain the background, got:\n%s", got)
 	}
 }
 
@@ -262,21 +445,21 @@ func TestAccountsModel_DKeyRequiresRows(t *testing.T) {
 func TestLedgerToRows(t *testing.T) {
 	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	rows := ledgerToRows([]client.LedgerEntry{
-		{Description: "Invoice #1", Value: 1000, Balance: 1000, Timestamp: ts},
-		{Description: "Invoice #2", Value: -300, Balance: 700, Timestamp: ts},
-	})
+		{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000, Timestamp: ts},
+		{Description: "Invoice #2", CurrencyID: testUSD.ID, Amount: -300, Balance: 700, Timestamp: ts},
+	}, testCurrencies)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
 	if got, want := rows[0], (table.Row{
 		ts.Local().Format(timestampLayout), "Invoice #1",
-		rightAlign("10.00", moneyColumnWidth), rightAlign("10.00", moneyColumnWidth),
+		rightAlign("USD10.00", moneyColumnWidth), rightAlign("USD10.00", moneyColumnWidth),
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
 	if got, want := rows[1], (table.Row{
 		ts.Local().Format(timestampLayout), "Invoice #2",
-		rightAlign("-3.00", moneyColumnWidth), rightAlign("7.00", moneyColumnWidth),
+		rightAlign("USD-3.00", moneyColumnWidth), rightAlign("USD7.00", moneyColumnWidth),
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
@@ -296,11 +479,11 @@ func TestAccountsModel_EnterOpensLedger(t *testing.T) {
 	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		json.NewEncoder(w).Encode([]client.LedgerEntry{
-			{Description: "Invoice #1", Value: 1000, Balance: 1000},
+			{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000},
 		})
 	})
 	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
-	m.table.SetRows(accountsToRows(m.rows))
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 
 	m, cmd := m.Update(keyPress("enter"))
 	if m.mode != accountsModeLedger {
@@ -342,7 +525,7 @@ func TestAccountsModel_QKeyGoesBackFromLedger(t *testing.T) {
 		json.NewEncoder(w).Encode([]client.LedgerEntry{})
 	})
 	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
-	m.table.SetRows(accountsToRows(m.rows))
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 
 	m, _ = m.Update(keyPress("enter"))
 	if m.mode != accountsModeLedger {
@@ -435,8 +618,6 @@ func TestAccountsModel_CreateValidation(t *testing.T) {
 	m, _ = m.Update(keyPress("n"))
 
 	// Submitting with an empty name should not hit the API.
-	m, _ = m.Update(keyPress("enter"))
-	m, _ = m.Update(keyPress("enter"))
 	m, cmd := m.Update(keyPress("enter"))
 	if m.err != "name is required" {
 		t.Fatalf("err = %q, want %q", m.err, "name is required")
@@ -450,6 +631,9 @@ func TestAccountsModel_CreateValidation(t *testing.T) {
 	if m.mode != accountsModeCreate {
 		t.Fatalf("mode = %v, want accountsModeCreate (form should stay open)", m.mode)
 	}
+	if m.createFocus != focusName {
+		t.Fatalf("createFocus = %v, want focusName (so the user can fix it)", m.createFocus)
+	}
 }
 
 func TestAccountsModel_CreateWithParentSelection(t *testing.T) {
@@ -460,27 +644,21 @@ func TestAccountsModel_CreateWithParentSelection(t *testing.T) {
 		json.NewEncoder(w).Encode(client.Account{ID: 3, Name: gotAccount.Name})
 	})
 	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
-	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("n")) // focus starts on Parent
 
-	// Row 0 is "(none)"; move down twice to land on account ID 2.
+	// Choice 0 is "(none)"; move down twice to land on account ID 2.
 	m, _ = m.Update(keyPress("down"))
 	m, _ = m.Update(keyPress("down"))
-	m, _ = m.Update(keyPress("enter"))
-
-	if m.createStep != stepAccountName {
-		t.Fatalf("createStep = %v, want stepAccountName", m.createStep)
-	}
-	if m.pendingParentID == nil || *m.pendingParentID != 2 {
-		t.Fatalf("pendingParentID = %v, want 2", m.pendingParentID)
+	if got := m.parentPicker.Cursor(); got != 2 {
+		t.Fatalf("parentPicker cursor = %d, want 2", got)
 	}
 
+	m, _ = m.Update(keyPress("tab")) // -> Name
 	m = typeString(m, "Cash")
-	m, cmd := m.Update(keyPress("enter")) // -> code
-	if m.createStep != stepAccountCode {
-		t.Fatalf("createStep = %v, want stepAccountCode", m.createStep)
-	}
+	m, _ = m.Update(keyPress("tab")) // -> Code
 	m = typeString(m, "1000")
-	m, cmd = m.Update(keyPress("enter")) // submit
+
+	m, cmd := m.Update(keyPress("enter")) // submit, from any field
 	if cmd == nil {
 		t.Fatal("expected a command to submit the create request")
 	}
@@ -506,11 +684,10 @@ func TestAccountsModel_CreateDefaultsToNoParent(t *testing.T) {
 		json.NewEncoder(w).Encode(client.Account{ID: 1, Name: gotAccount.Name})
 	})
 	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
-	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("enter")) // confirm "(none)" as parent
+	m, _ = m.Update(keyPress("n")) // focus starts on Parent, defaulting to "(none)"
+	m, _ = m.Update(keyPress("tab"))
 	m = typeString(m, "Cash")
-	m, _ = m.Update(keyPress("enter")) // -> code
-	m, cmd := m.Update(keyPress("enter"))
+	m, cmd := m.Update(keyPress("enter")) // submit, without ever touching Code
 	if cmd == nil {
 		t.Fatal("expected a command to submit the create request")
 	}
@@ -554,7 +731,7 @@ func TestAccountsModel_ConfirmDeleteYesAndNo(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
-	m.table.SetRows(accountsToRows(m.rows))
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 
 	// A key other than "y" cancels.
 	m, _ = m.Update(keyPress("d"))

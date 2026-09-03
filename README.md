@@ -172,19 +172,17 @@ one row per currency.
 
 ## TUI
 
-> **Currently out of sync with the API:** the TUI still creates and
-> displays transaction entries with the old `(account_id, value)` shape,
-> not the API's current `(account_id, amount, currency_id)`. Creating a
-> transaction from the TUI will fail (it posts no `currency_id`, so the
-> API rejects it as referencing a currency that doesn't exist), and
-> balances/ledgers won't render correctly until the TUI is updated for
-> currencies.
+`Tab`/`Shift+Tab` cycle through the Accounts, Transactions, and Currencies
+views. Within a view: `↑`/`↓` navigate, `n` creates a new record, `d`
+deletes the selected one, `r` refreshes, `Enter` opens a transaction's
+entries or an account's ledger (Currencies has no such drill-down). `Esc`
+cancels a form or backs out of a ledger/detail view, `q` quits.
 
-`Tab` switches between the Accounts and Transactions views. Within a view:
-`↑`/`↓` navigate, `n` creates a new record, `d` deletes the selected one,
-`r` refreshes, `Enter` opens a transaction's entries (in the Transactions
-view) or an account's ledger (in the Accounts view). `Esc` cancels a form
-or backs out of a ledger/detail view, `q` quits.
+Every displayed amount is formatted per its own currency's rules (name
+position/spacing, thousands/decimal separators, decimal places) via
+`client.Currency.Format`; an account's balance is shown as one such
+amount per currency it has entries in (e.g. `US Dollar10.00, 5,00 Euro`),
+and a ledger's running balance is likewise kept separate per currency.
 
 Creating an account opens a pop-up over the accounts list, laid out as a
 small table — Parent, Name, and Code as fixed-width columns with their
@@ -193,10 +191,17 @@ has focus, a dropdown lists "(none)" and every existing account — all of
 them at once, or as many as fit in the window — and `↑`/`↓` pick one.
 Name is required, code is optional.
 
+Creating a currency opens a similar pop-up, with all seven fields (Name,
+Position, Space, Decimals, Thousands separator, Decimal separator, ISIN)
+laid out as a two-row grid; `Tab`/`Shift+Tab`/`←`/`→` move between them,
+and `↑`/`↓` change the value of whichever of Position/Space/Decimals has
+focus (the others are free text). Only Name is required.
+
 When creating a transaction, the TUI walks through description, timestamp,
-and then repeatedly asks for `(account_id, value)` entries until you
-confirm you're done; it will only submit once at least two entries are
-present and they sum to zero.
+and then repeatedly asks for an account, a currency (picked from a
+dropdown, the same way an account's parent is), and an amount — until you
+confirm you're done. A transaction can mix currencies freely; it will
+only submit once each currency's own entries sum to zero.
 
 ## Project layout
 

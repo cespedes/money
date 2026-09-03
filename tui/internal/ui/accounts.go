@@ -23,33 +23,38 @@ const (
 	accountsModeLedger
 )
 
-// accountCreateStep is one step of the "new account" wizard: pick an
-// optional parent from the existing accounts first, then a name, then an
-// optional code.
-type accountCreateStep int
+// createFocus identifies which of the "new account" form's three fields —
+// all shown on a single line — currently has focus.
+type createFocus int
 
 const (
-	stepPickParent accountCreateStep = iota
-	stepAccountName
-	stepAccountCode
+	focusParent createFocus = iota
+	focusName
+	focusCode
 )
 
 type accountsModel struct {
 	client *client.Client
 
-	mode   accountsMode
-	table  table.Model
-	rows   []client.Account
-	status string
-	err    string
+	mode       accountsMode
+	table      table.Model
+	rows       []client.Account
+	currencies currencyByID // for rendering Balances/ledger amounts
+	status     string
+	err        string
 
-	createStep      accountCreateStep
-	parentPicker    table.Model
-	pendingParentID *int64
-	inputs          []textinput.Model
+	createFocus  createFocus
+	parentPicker table.Model // dropdown of "(none)" + m.rows, for the parent field
+	inputs       []textinput.Model
 
 	ledgerAccount client.Account
+	ledgerEntries []client.LedgerEntry
 	ledgerTable   table.Model
+
+	// windowHeight is the last content height passed to SetSize, kept so
+	// the parent dropdown can be resized again when the account list
+	// changes (see syncParentPickerHeight).
+	windowHeight int
 }
 
 const (
@@ -57,17 +62,32 @@ const (
 	fieldAccountCode
 )
 
-// moneyColumnWidth is the width of every "Value"/"Balance" table column;
-// cell content for those columns is right-aligned to this same width (see
-// rightAlign), since bubbles' table has no per-column alignment option.
-const moneyColumnWidth = 12
+// moneyColumnWidth is the width of every single-amount "Value"/"Balance"
+// table column (wide enough for a currency name plus a formatted
+// amount); cell content for those columns is right-aligned to this same
+// width (see rightAlign), since bubbles' table has no per-column
+// alignment option.
+const moneyColumnWidth = 18
+
+// balancesColumnWidth is wider still, for the accounts list's "Balances"
+// column, which can hold more than one currency's amount at once.
+const balancesColumnWidth = 40
+
+// createFieldWidth is the fixed column width of every field in the "new
+// account" pop-up (Parent, Name, Code), so their values line up in a grid
+// under their column headers.
+const createFieldWidth = 16
+
+// parentPickerWidth spans the same total width as the three field columns
+// together, so the parent dropdown lines up under the row above it.
+const parentPickerWidth = 3*createFieldWidth + 4
 
 func newAccountsModel(c *client.Client) accountsModel {
 	columns := []table.Column{
 		{Title: "ID", Width: 6},
 		{Title: "Code", Width: 10},
 		{Title: "Name", Width: 30},
-		{Title: "Balance", Width: moneyColumnWidth},
+		{Title: "Balances", Width: balancesColumnWidth},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -76,15 +96,13 @@ func newAccountsModel(c *client.Client) accountsModel {
 	)
 
 	name := textinput.New()
-	name.Placeholder = "Name (required)"
+	name.Placeholder = "required"
+	name.Prompt = ""
+	name.SetWidth(createFieldWidth)
 	code := textinput.New()
-	code.Placeholder = "Code (optional)"
-
-	parentPicker := table.New(
-		table.WithColumns([]table.Column{{Title: "Account", Width: 40}}),
-		table.WithFocused(true),
-		table.WithHeight(8),
-	)
+	code.Placeholder = "optional"
+	code.Prompt = ""
+	code.SetWidth(createFieldWidth)
 
 	ledgerTable := table.New(
 		table.WithColumns([]table.Column{
@@ -97,17 +115,23 @@ func newAccountsModel(c *client.Client) accountsModel {
 		table.WithHeight(10),
 	)
 
+	parentPicker := table.New(
+		table.WithColumns([]table.Column{{Title: "Parent account", Width: parentPickerWidth}}),
+		table.WithFocused(true),
+		table.WithWidth(parentPickerWidth),
+	)
+
 	return accountsModel{
 		client:       c,
 		table:        t,
-		parentPicker: parentPicker,
 		inputs:       []textinput.Model{name, code},
 		ledgerTable:  ledgerTable,
+		parentPicker: parentPicker,
 	}
 }
 
 func (m accountsModel) Init() tea.Cmd {
-	return m.loadAccounts
+	return tea.Batch(m.loadAccounts, m.loadCurrencies)
 }
 
 func (m accountsModel) Editing() bool {
@@ -116,11 +140,9 @@ func (m accountsModel) Editing() bool {
 
 func (m *accountsModel) SetSize(width, height int) {
 	m.table.SetWidth(width)
-	m.parentPicker.SetWidth(width)
 	m.ledgerTable.SetWidth(width)
 	if height > 5 {
 		m.table.SetHeight(height)
-		m.parentPicker.SetHeight(height)
 	}
 	// The ledger view has its own two-line header ("Transactions for #N
 	// Name" plus a blank line) above the table, unlike the plain list, so
@@ -128,6 +150,27 @@ func (m *accountsModel) SetSize(width, height int) {
 	if height > 7 {
 		m.ledgerTable.SetHeight(height - 2)
 	}
+	m.windowHeight = height
+	m.syncParentPickerHeight()
+}
+
+// syncParentPickerHeight sizes the parent dropdown to show every option at
+// once, or as many as fit in the window: it's capped by both the number
+// of options and the space left in the terminal once the pop-up's own
+// chrome (title, header/value row, borders, padding) is accounted for.
+func (m *accountsModel) syncParentPickerHeight() {
+	const popupChrome = 10
+	available := m.windowHeight - popupChrome
+	if available < 3 {
+		available = 3
+	}
+	// SetHeight's argument covers the table's own header row too, on top
+	// of the data rows actually wanted: "(none)" plus every account.
+	want := len(m.rows) + 1 /* "(none)" */ + 1 /* header row */
+	if want > available {
+		want = available
+	}
+	m.parentPicker.SetHeight(want)
 }
 
 type accountsLoadedMsg struct {
@@ -147,6 +190,11 @@ type ledgerLoadedMsg struct {
 func (m accountsModel) loadAccounts() tea.Msg {
 	accounts, err := m.client.ListAccounts(context.Background())
 	return accountsLoadedMsg{accounts: accounts, err: err}
+}
+
+func (m accountsModel) loadCurrencies() tea.Msg {
+	currencies, err := m.client.ListCurrencies(context.Background())
+	return currenciesLoadedMsg{currencies: currencies, err: err}
 }
 
 func (m accountsModel) loadLedger(accountID int64) tea.Cmd {
@@ -174,7 +222,26 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		for i, n := range nodes {
 			m.rows[i] = n.account
 		}
-		m.table.SetRows(nodesToRows(nodes))
+		m.table.SetRows(nodesToRows(nodes, m.currencies))
+		m.syncParentPickerHeight()
+		return m, nil
+
+	case currenciesLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.currencies = indexCurrencies(msg.currencies)
+		// Re-render whatever's already on screen so amounts reflect the
+		// freshly (re)loaded currency formatting, regardless of whether
+		// accounts or the ledger loaded first.
+		if m.rows != nil {
+			m.table.SetRows(nodesToRows(orderAccountsAsTree(m.rows), m.currencies))
+		}
+		if m.ledgerEntries != nil {
+			m.ledgerTable.SetRows(ledgerToRows(m.ledgerEntries, m.currencies))
+		}
 		return m, nil
 
 	case accountMutatedMsg:
@@ -192,7 +259,8 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 			return m, nil
 		}
 		m.err = ""
-		m.ledgerTable.SetRows(ledgerToRows(msg.entries))
+		m.ledgerEntries = msg.entries
+		m.ledgerTable.SetRows(ledgerToRows(msg.entries, m.currencies))
 		return m, nil
 
 	case tea.KeyMsg:
@@ -228,14 +296,13 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		return m, m.loadAccounts
 	case "n":
 		m.mode = accountsModeCreate
-		m.createStep = stepPickParent
-		m.pendingParentID = nil
-		m.parentPicker.SetRows(parentPickerRows(m.rows))
+		m.parentPicker.SetRows(parentDropdownRows(m.rows))
 		m.parentPicker.SetCursor(0)
+		m.syncParentPickerHeight()
 		for i := range m.inputs {
 			m.inputs[i].SetValue("")
-			m.inputs[i].Blur()
 		}
+		m.setCreateFocus(focusParent)
 		m.err = ""
 		return m, nil
 	case "d":
@@ -251,6 +318,7 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.mode = accountsModeLedger
 		m.ledgerAccount = m.rows[row]
+		m.ledgerEntries = nil
 		m.ledgerTable.SetRows(nil)
 		m.err = ""
 		return m, m.loadLedger(m.ledgerAccount.ID)
@@ -272,45 +340,38 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 	return m, cmd
 }
 
+// updateCreate handles the "new account" form: Parent, Name, and Code are
+// all shown on one row, and tab/shift+tab or left/right move focus
+// between them (arrow keys always change focus rather than the text
+// cursor, so there's one consistent way to navigate the form). While the
+// Parent field has focus, a dropdown of "(none)" plus the existing
+// accounts is shown (see createPopup), navigated like any other table.
 func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
-	if msg.String() == "esc" {
+	switch msg.String() {
+	case "esc":
 		m.mode = accountsModeList
 		m.err = ""
 		return m, nil
+	case "enter":
+		return m.submitCreate()
+	case "tab", "right":
+		m.setCreateFocus((m.createFocus + 1) % 3)
+		return m, nil
+	case "shift+tab", "left":
+		m.setCreateFocus((m.createFocus + 2) % 3) // +2 mod 3 == -1 mod 3
+		return m, nil
 	}
 
-	switch m.createStep {
-	case stepPickParent:
-		if msg.String() == "enter" {
-			m.pendingParentID = selectedParentID(m.parentPicker.Cursor(), m.rows)
-			m.createStep = stepAccountName
-			m.inputs[fieldAccountName].Focus()
-			return m, nil
-		}
+	switch m.createFocus {
+	case focusParent:
 		var cmd tea.Cmd
 		m.parentPicker, cmd = m.parentPicker.Update(msg)
 		return m, cmd
-
-	case stepAccountName:
-		if msg.String() == "enter" {
-			if strings.TrimSpace(m.inputs[fieldAccountName].Value()) == "" {
-				m.err = "name is required"
-				return m, nil
-			}
-			m.err = ""
-			m.inputs[fieldAccountName].Blur()
-			m.createStep = stepAccountCode
-			m.inputs[fieldAccountCode].Focus()
-			return m, nil
-		}
+	case focusName:
 		var cmd tea.Cmd
 		m.inputs[fieldAccountName], cmd = m.inputs[fieldAccountName].Update(msg)
 		return m, cmd
-
-	case stepAccountCode:
-		if msg.String() == "enter" {
-			return m.submitCreate()
-		}
+	case focusCode:
 		var cmd tea.Cmd
 		m.inputs[fieldAccountCode], cmd = m.inputs[fieldAccountCode].Update(msg)
 		return m, cmd
@@ -318,10 +379,24 @@ func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m *accountsModel) setCreateFocus(f createFocus) {
+	m.createFocus = f
+	if f == focusName {
+		m.inputs[fieldAccountName].Focus()
+	} else {
+		m.inputs[fieldAccountName].Blur()
+	}
+	if f == focusCode {
+		m.inputs[fieldAccountCode].Focus()
+	} else {
+		m.inputs[fieldAccountCode].Blur()
+	}
+}
+
 // selectedParentID maps a parentPicker cursor position to the chosen
-// parent account ID. Row 0 is always the "(none)" option.
-func selectedParentID(cursor int, accounts []client.Account) *int64 {
-	i := cursor - 1
+// parent account ID. Index 0 is always the "(none)" option.
+func selectedParentID(choice int, accounts []client.Account) *int64 {
+	i := choice - 1
 	if i < 0 || i >= len(accounts) {
 		return nil
 	}
@@ -330,9 +405,15 @@ func selectedParentID(cursor int, accounts []client.Account) *int64 {
 }
 
 func (m accountsModel) submitCreate() (accountsModel, tea.Cmd) {
+	name := strings.TrimSpace(m.inputs[fieldAccountName].Value())
+	if name == "" {
+		m.err = "name is required"
+		m.setCreateFocus(focusName)
+		return m, nil
+	}
 	account := client.Account{
-		Name:     strings.TrimSpace(m.inputs[fieldAccountName].Value()),
-		ParentID: m.pendingParentID,
+		Name:     name,
+		ParentID: selectedParentID(m.parentPicker.Cursor(), m.rows),
 	}
 	if code := strings.TrimSpace(m.inputs[fieldAccountCode].Value()); code != "" {
 		account.Code = &code
@@ -367,10 +448,10 @@ func (m accountsModel) updateConfirmDelete(msg tea.KeyMsg) (accountsModel, tea.C
 	}
 }
 
-// parentPickerRows lists the "(none)" option followed by every existing
-// account, in the same order as accounts, so a picker cursor position can
-// be mapped back to an account via selectedParentID.
-func parentPickerRows(accounts []client.Account) []table.Row {
+// parentDropdownRows lists the "(none)" option followed by every existing
+// account, in the same order as accounts, so a parentPicker cursor
+// position can be mapped back to an account via selectedParentID.
+func parentDropdownRows(accounts []client.Account) []table.Row {
 	rows := make([]table.Row, 0, len(accounts)+1)
 	rows = append(rows, table.Row{"(none)"})
 	for _, a := range accounts {
@@ -394,11 +475,11 @@ func parentSummary(parentID *int64, accounts []client.Account) string {
 // accountsToRows lays accounts out as an indented tree: each account is
 // immediately followed by its own children, and accounts at the same
 // level (no parent, or the same parent) are ordered by ID.
-func accountsToRows(accounts []client.Account) []table.Row {
-	return nodesToRows(orderAccountsAsTree(accounts))
+func accountsToRows(accounts []client.Account, currencies currencyByID) []table.Row {
+	return nodesToRows(orderAccountsAsTree(accounts), currencies)
 }
 
-func nodesToRows(nodes []accountTreeNode) []table.Row {
+func nodesToRows(nodes []accountTreeNode, currencies currencyByID) []table.Row {
 	rows := make([]table.Row, 0, len(nodes))
 	for _, node := range nodes {
 		a := node.account
@@ -407,9 +488,23 @@ func nodesToRows(nodes []accountTreeNode) []table.Row {
 			code = *a.Code
 		}
 		name := strings.Repeat("  ", node.depth) + a.Name
-		rows = append(rows, table.Row{strconv.FormatInt(a.ID, 10), code, name, rightAlign(formatCents(a.Balance), moneyColumnWidth)})
+		rows = append(rows, table.Row{strconv.FormatInt(a.ID, 10), code, name, formatBalances(a.Balances, currencies)})
 	}
 	return rows
+}
+
+// formatBalances renders an account's per-currency balances (see
+// client.Account.Balances) as a single comma-separated cell, since
+// bubbles' table has no notion of a multi-line cell.
+func formatBalances(balances []client.CurrencyAmount, currencies currencyByID) string {
+	if len(balances) == 0 {
+		return ""
+	}
+	parts := make([]string, len(balances))
+	for i, b := range balances {
+		parts[i] = formatAmount(b.Amount, currencies, b.CurrencyID)
+	}
+	return strings.Join(parts, ", ")
 }
 
 type accountTreeNode struct {
@@ -481,44 +576,59 @@ func rightAlign(s string, width int) string {
 	return fmt.Sprintf("%*s", width, s)
 }
 
-func ledgerToRows(entries []client.LedgerEntry) []table.Row {
+func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID) []table.Row {
 	rows := make([]table.Row, 0, len(entries))
 	for _, e := range entries {
 		rows = append(rows, table.Row{
 			e.Timestamp.Local().Format(timestampLayout),
 			e.Description,
-			rightAlign(formatCents(e.Value), moneyColumnWidth),
-			rightAlign(formatCents(e.Balance), moneyColumnWidth),
+			rightAlign(formatAmount(e.Amount, currencies, e.CurrencyID), moneyColumnWidth),
+			rightAlign(formatAmount(e.Balance, currencies, e.CurrencyID), moneyColumnWidth),
 		})
 	}
 	return rows
+}
+
+// createPopup renders the "new account" form as a bordered, table-shaped
+// pop-up: a header row naming the three fields (Parent, Name, Code) above
+// a row of their fixed-width values, with the focused column highlighted.
+// While Parent has focus, a dropdown listing "(none)" plus every existing
+// account is shown below that row — sized (see syncParentPickerHeight) to
+// show them all at once, or as many as fit in the window. It's meant to
+// be composited over the accounts list via overlayCentered, not shown in
+// place of it.
+func (m accountsModel) createPopup() string {
+	headers := make([]string, 3)
+	for i, label := range []string{"Parent", "Name", "Code"} {
+		headers[i] = columnHeader(label, createFocus(i) == m.createFocus)
+	}
+
+	parentValue := padOrTruncate(parentSummary(selectedParentID(m.parentPicker.Cursor(), m.rows), m.rows), createFieldWidth)
+	if m.createFocus == focusParent {
+		parentValue = focusedFieldStyle.Render(parentValue)
+	}
+	values := []string{
+		parentValue,
+		m.inputs[fieldAccountName].View(),
+		m.inputs[fieldAccountCode].View(),
+	}
+
+	content := formLabelStyle.Render("New account") + "\n\n" +
+		strings.Join(headers, "  ") + "\n" +
+		strings.Join(values, "  ")
+	if m.createFocus == focusParent {
+		content += "\n" + m.parentPicker.View()
+	}
+	if m.err != "" {
+		content += "\n\n" + errorStyle.Render("Error: "+m.err)
+	}
+	return popupStyle.Render(content)
 }
 
 func (m accountsModel) View() string {
 	var b strings.Builder
 
 	switch m.mode {
-	case accountsModeCreate:
-		b.WriteString(formLabelStyle.Render("New account"))
-		b.WriteString("\n\n")
-
-		if m.createStep == stepPickParent {
-			b.WriteString(dimStyle.Render("Parent account (↑/↓ to choose, enter to confirm):"))
-			b.WriteString("\n")
-			b.WriteString(m.parentPicker.View())
-		} else {
-			b.WriteString(dimStyle.Render("Parent: "))
-			b.WriteString(parentSummary(m.pendingParentID, m.rows))
-			b.WriteString("\n")
-			b.WriteString(dimStyle.Render("Name: "))
-			b.WriteString(m.inputs[fieldAccountName].View())
-			b.WriteString("\n")
-		}
-		if m.createStep == stepAccountCode {
-			b.WriteString(dimStyle.Render("Code: "))
-			b.WriteString(m.inputs[fieldAccountCode].View())
-			b.WriteString("\n")
-		}
 	case accountsModeConfirmDelete:
 		b.WriteString(m.table.View())
 		b.WriteString("\n\n")
@@ -528,10 +638,15 @@ func (m accountsModel) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(m.ledgerTable.View())
 	default:
+		// accountsModeCreate shows its own pop-up (see createPopup),
+		// composited over this same list view by App.View — so the list
+		// is still the right thing to render underneath it here.
 		b.WriteString(m.table.View())
 	}
 
-	if m.err != "" {
+	// The create pop-up carries its own error text, so it isn't repeated
+	// here.
+	if m.err != "" && m.mode != accountsModeCreate {
 		b.WriteString("\n\n")
 		b.WriteString(errorStyle.Render("Error: " + m.err))
 	} else if m.status != "" && m.mode == accountsModeList {

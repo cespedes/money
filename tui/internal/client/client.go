@@ -123,3 +123,21 @@ func (c *Client) CreateTransaction(ctx context.Context, t Transaction) (Transact
 func (c *Client) DeleteTransaction(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, "/transactions/"+strconv.FormatInt(id, 10), nil, nil)
 }
+
+func (c *Client) ListCurrencies(ctx context.Context) ([]Currency, error) {
+	var currencies []Currency
+	if err := c.do(ctx, http.MethodGet, "/currencies", nil, &currencies); err != nil {
+		return nil, err
+	}
+	return currencies, nil
+}
+
+func (c *Client) CreateCurrency(ctx context.Context, cur Currency) (Currency, error) {
+	var created Currency
+	err := c.do(ctx, http.MethodPost, "/currencies", cur, &created)
+	return created, err
+}
+
+func (c *Client) DeleteCurrency(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodDelete, "/currencies/"+strconv.FormatInt(id, 10), nil, nil)
+}

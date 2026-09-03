@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ const (
 	stepDescription createStep = iota
 	stepTimestamp
 	stepEntryAccount
+	stepEntryCurrency
 	stepEntryValue
 	stepConfirmMore
 )
@@ -42,17 +44,22 @@ type transactionsModel struct {
 	tbl  table.Model
 	rows []client.Transaction
 
+	currencies     []client.Currency
+	currencyIndex  currencyByID
+	currencyPicker table.Model
+
 	status string
 	err    string
 
 	// create wizard state
-	step           createStep
-	descInput      textinput.Model
-	timestampInput textinput.Model
-	acctInput      textinput.Model
-	valueInput     textinput.Model
-	pendingEntries []client.Entry
-	pendingAcctID  int64
+	step              createStep
+	descInput         textinput.Model
+	timestampInput    textinput.Model
+	acctInput         textinput.Model
+	valueInput        textinput.Model
+	pendingEntries    []client.Entry
+	pendingAcctID     int64
+	pendingCurrencyID int64
 
 	// detail view state
 	detail client.Transaction
@@ -78,7 +85,14 @@ func newTransactionsModel(c *client.Client) transactionsModel {
 	acct := textinput.New()
 	acct.Placeholder = "Account ID"
 	val := textinput.New()
-	val.Placeholder = "Value in cents (e.g. -1000 or 1000)"
+	val.Placeholder = "Amount in the currency's minor unit (e.g. -1000 or 1000)"
+
+	currencyPicker := table.New(
+		table.WithColumns([]table.Column{{Title: "Currency", Width: parentPickerWidth}}),
+		table.WithFocused(true),
+		table.WithWidth(parentPickerWidth),
+		table.WithHeight(8),
+	)
 
 	return transactionsModel{
 		client:         c,
@@ -87,11 +101,12 @@ func newTransactionsModel(c *client.Client) transactionsModel {
 		timestampInput: ts,
 		acctInput:      acct,
 		valueInput:     val,
+		currencyPicker: currencyPicker,
 	}
 }
 
 func (m transactionsModel) Init() tea.Cmd {
-	return m.loadTransactions
+	return tea.Batch(m.loadTransactions, m.loadCurrencies)
 }
 
 // Editing reports whether the app-level quit/tab-switch keys should be
@@ -121,6 +136,11 @@ func (m transactionsModel) loadTransactions() tea.Msg {
 	return transactionsLoadedMsg{transactions: transactions, err: err}
 }
 
+func (m transactionsModel) loadCurrencies() tea.Msg {
+	currencies, err := m.client.ListCurrencies(context.Background())
+	return currenciesLoadedMsg{currencies: currencies, err: err}
+}
+
 func (m transactionsModel) Update(msg tea.Msg) (transactionsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case transactionsLoadedMsg:
@@ -131,6 +151,16 @@ func (m transactionsModel) Update(msg tea.Msg) (transactionsModel, tea.Cmd) {
 		m.err = ""
 		m.rows = msg.transactions
 		m.tbl.SetRows(transactionsToRows(msg.transactions))
+		return m, nil
+
+	case currenciesLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.currencies = msg.currencies
+		m.currencyIndex = indexCurrencies(msg.currencies)
 		return m, nil
 
 	case transactionMutatedMsg:
@@ -171,6 +201,10 @@ func (m transactionsModel) updateList(msg tea.KeyMsg) (transactionsModel, tea.Cm
 		m.status = "Refreshing..."
 		return m, m.loadTransactions
 	case "n":
+		if len(m.currencies) == 0 {
+			m.err = "create a currency first (see the Currencies tab)"
+			return m, nil
+		}
 		m.mode = transactionsModeCreate
 		m.step = stepDescription
 		m.pendingEntries = nil
@@ -220,6 +254,10 @@ func (m transactionsModel) updateConfirmDelete(msg tea.KeyMsg) (transactionsMode
 	}
 }
 
+// updateCreate drives the "new transaction" wizard: description,
+// timestamp, then repeatedly account, currency (picked from a dropdown,
+// like the account form's parent picker), and amount, until the user
+// declines to add another entry.
 func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.Cmd) {
 	if msg.String() == "esc" {
 		m.mode = transactionsModeList
@@ -266,22 +304,42 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 			m.pendingAcctID = id
 			m.err = ""
 			m.acctInput.Blur()
-			m.step = stepEntryValue
-			m.valueInput.Focus()
+			m.step = stepEntryCurrency
+			m.currencyPicker.SetRows(currencyDropdownRows(m.currencies))
+			m.currencyPicker.SetCursor(0)
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.acctInput, cmd = m.acctInput.Update(msg)
 		return m, cmd
 
-	case stepEntryValue:
+	case stepEntryCurrency:
 		if msg.String() == "enter" {
-			value, err := strconv.ParseInt(strings.TrimSpace(m.valueInput.Value()), 10, 64)
-			if err != nil {
-				m.err = "value must be an integer number of cents"
+			row := m.currencyPicker.Cursor()
+			if row < 0 || row >= len(m.currencies) {
+				m.err = "pick a currency"
 				return m, nil
 			}
-			m.pendingEntries = append(m.pendingEntries, client.Entry{AccountID: m.pendingAcctID, Value: value})
+			m.pendingCurrencyID = m.currencies[row].ID
+			m.err = ""
+			m.step = stepEntryValue
+			m.valueInput.Focus()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.currencyPicker, cmd = m.currencyPicker.Update(msg)
+		return m, cmd
+
+	case stepEntryValue:
+		if msg.String() == "enter" {
+			amount, err := strconv.ParseInt(strings.TrimSpace(m.valueInput.Value()), 10, 64)
+			if err != nil {
+				m.err = "amount must be an integer"
+				return m, nil
+			}
+			m.pendingEntries = append(m.pendingEntries, client.Entry{
+				AccountID: m.pendingAcctID, Amount: amount, CurrencyID: m.pendingCurrencyID,
+			})
 			m.err = ""
 			m.valueInput.Blur()
 			m.acctInput.SetValue("")
@@ -313,15 +371,22 @@ func (m transactionsModel) submitCreate() (transactionsModel, tea.Cmd) {
 		m.acctInput.Focus()
 		return m, nil
 	}
-	var sum int64
+
+	// The entries must sum to zero within each currency independently —
+	// amounts in different currencies are never summed together (see
+	// api/internal/store/transactions.go's Create).
+	sums := make(map[int64]int64)
 	for _, e := range m.pendingEntries {
-		sum += e.Value
+		sums[e.CurrencyID] += e.Amount
 	}
-	if sum != 0 {
-		m.err = fmt.Sprintf("entries must sum to zero (currently %s)", formatCents(sum))
-		m.step = stepEntryAccount
-		m.acctInput.Focus()
-		return m, nil
+	for _, currencyID := range sortedCurrencyIDs(sums) {
+		if sum := sums[currencyID]; sum != 0 {
+			m.err = fmt.Sprintf("entries in %s must sum to zero (currently %s)",
+				currencyName(currencyID, m.currencyIndex), formatAmount(sum, m.currencyIndex, currencyID))
+			m.step = stepEntryAccount
+			m.acctInput.Focus()
+			return m, nil
+		}
 	}
 
 	ts := time.Now()
@@ -363,15 +428,33 @@ func transactionsToRows(transactions []client.Transaction) []table.Row {
 	return rows
 }
 
-// formatCents renders a signed minor-unit integer as a decimal amount,
-// e.g. -1234 -> "-12.34".
-func formatCents(v int64) string {
-	sign := ""
-	if v < 0 {
-		sign = "-"
-		v = -v
+// currencyDropdownRows lists every currency, in the same order as
+// currencies, so a currencyPicker cursor position can be mapped back to
+// one directly by index.
+func currencyDropdownRows(currencies []client.Currency) []table.Row {
+	rows := make([]table.Row, 0, len(currencies))
+	for _, c := range currencies {
+		rows = append(rows, table.Row{fmt.Sprintf("#%d  %s", c.ID, c.Name)})
 	}
-	return fmt.Sprintf("%s%d.%02d", sign, v/100, v%100)
+	return rows
+}
+
+func currencyName(id int64, currencies currencyByID) string {
+	if c, ok := currencies[id]; ok {
+		return c.Name
+	}
+	return fmt.Sprintf("currency %d", id)
+}
+
+// sortedCurrencyIDs returns sums' keys in ascending order, for
+// deterministic display (map iteration order isn't).
+func sortedCurrencyIDs(sums map[int64]int64) []int64 {
+	ids := make([]int64, 0, len(sums))
+	for id := range sums {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 func (m transactionsModel) View() string {
@@ -393,21 +476,32 @@ func (m transactionsModel) View() string {
 			b.WriteString("\n")
 			b.WriteString(dimStyle.Render("Entries so far:"))
 			b.WriteString("\n")
-			var sum int64
+			sums := make(map[int64]int64)
 			for _, e := range m.pendingEntries {
-				sum += e.Value
-				b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatCents(e.Value)))
+				sums[e.CurrencyID] += e.Amount
+				b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatAmount(e.Amount, m.currencyIndex, e.CurrencyID)))
 			}
-			b.WriteString(dimStyle.Render(fmt.Sprintf("  sum: %s\n", formatCents(sum))))
+			for _, currencyID := range sortedCurrencyIDs(sums) {
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  sum (%s): %s\n",
+					currencyName(currencyID, m.currencyIndex), formatAmount(sums[currencyID], m.currencyIndex, currencyID))))
+			}
 		}
-		if m.step == stepEntryAccount || m.step == stepEntryValue {
+		if m.step == stepEntryAccount || m.step == stepEntryCurrency || m.step == stepEntryValue {
 			b.WriteString("\n")
 			b.WriteString(dimStyle.Render("Account ID:  "))
 			b.WriteString(m.acctInput.View())
 			b.WriteString("\n")
 		}
+		if m.step == stepEntryCurrency {
+			b.WriteString(dimStyle.Render("Currency (↑/↓ to choose, enter to confirm):"))
+			b.WriteString("\n")
+			b.WriteString(m.currencyPicker.View())
+		}
 		if m.step == stepEntryValue {
-			b.WriteString(dimStyle.Render("Value:       "))
+			b.WriteString(dimStyle.Render("Currency:    "))
+			b.WriteString(currencyName(m.pendingCurrencyID, m.currencyIndex))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("Amount:      "))
 			b.WriteString(m.valueInput.View())
 			b.WriteString("\n")
 		}
@@ -428,7 +522,7 @@ func (m transactionsModel) View() string {
 		b.WriteString(dimStyle.Render("Entries:"))
 		b.WriteString("\n")
 		for _, e := range m.detail.Entries {
-			b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatCents(e.Value)))
+			b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatAmount(e.Amount, m.currencyIndex, e.CurrencyID)))
 		}
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render("esc/enter: back"))

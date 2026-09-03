@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,30 +18,22 @@ func newTestTransactionsModel(t *testing.T, handler http.HandlerFunc) transactio
 	return newTransactionsModel(client.New(srv.URL))
 }
 
+// newTestTransactionsModelWithCurrency is like newTestTransactionsModel,
+// but pre-populates a single currency (testUSD), since "n" refuses to
+// open the create wizard with none loaded.
+func newTestTransactionsModelWithCurrency(t *testing.T, handler http.HandlerFunc) transactionsModel {
+	t.Helper()
+	m := newTestTransactionsModel(t, handler)
+	m.currencies = []client.Currency{testUSD}
+	m.currencyIndex = indexCurrencies(m.currencies)
+	return m
+}
+
 func typeStringT(m transactionsModel, s string) transactionsModel {
 	for _, r := range s {
 		m, _ = m.Update(keyPress(string(r)))
 	}
 	return m
-}
-
-func TestFormatCents(t *testing.T) {
-	tests := []struct {
-		value int64
-		want  string
-	}{
-		{0, "0.00"},
-		{1000, "10.00"},
-		{-1000, "-10.00"},
-		{5, "0.05"},
-		{-5, "-0.05"},
-		{123456, "1234.56"},
-	}
-	for _, tt := range tests {
-		if got := formatCents(tt.value); got != tt.want {
-			t.Errorf("formatCents(%d) = %q, want %q", tt.value, got, tt.want)
-		}
-	}
 }
 
 func TestTransactionsToRows(t *testing.T) {
@@ -62,10 +55,10 @@ func TestTransactionsModel_LoadTransactions(t *testing.T) {
 		json.NewEncoder(w).Encode([]client.Transaction{{ID: 1, Description: "Invoice #1"}})
 	})
 
-	msg := m.Init()()
+	msg := m.loadTransactions()
 	loaded, ok := msg.(transactionsLoadedMsg)
 	if !ok {
-		t.Fatalf("Init(): got %T, want transactionsLoadedMsg", msg)
+		t.Fatalf("loadTransactions(): got %T, want transactionsLoadedMsg", msg)
 	}
 	m2, _ := m.Update(loaded)
 	if len(m2.rows) != 1 || m2.rows[0].Description != "Invoice #1" {
@@ -73,8 +66,20 @@ func TestTransactionsModel_LoadTransactions(t *testing.T) {
 	}
 }
 
+func TestTransactionsModel_NKeyRequiresCurrency(t *testing.T) {
+	m := newTestTransactionsModel(t, nil) // no currencies pre-populated
+	m, _ = m.Update(keyPress("n"))
+
+	if m.mode != transactionsModeList {
+		t.Fatalf("mode = %v, want transactionsModeList (n should refuse with no currencies)", m.mode)
+	}
+	if m.err == "" {
+		t.Fatal("expected an error explaining no currency exists")
+	}
+}
+
 func TestTransactionsModel_NKeyEntersCreateMode(t *testing.T) {
-	m := newTestTransactionsModel(t, nil)
+	m := newTestTransactionsModelWithCurrency(t, nil)
 	m, _ = m.Update(keyPress("n"))
 
 	if m.mode != transactionsModeCreate {
@@ -89,7 +94,7 @@ func TestTransactionsModel_NKeyEntersCreateMode(t *testing.T) {
 }
 
 func TestTransactionsModel_CreateValidation_EmptyDescription(t *testing.T) {
-	m := newTestTransactionsModel(t, nil)
+	m := newTestTransactionsModelWithCurrency(t, nil)
 	m, _ = m.Update(keyPress("n"))
 	m, _ = m.Update(keyPress("enter")) // submit an empty description
 
@@ -102,7 +107,7 @@ func TestTransactionsModel_CreateValidation_EmptyDescription(t *testing.T) {
 }
 
 func TestTransactionsModel_CreateValidation_BadAccountID(t *testing.T) {
-	m := newTestTransactionsModel(t, nil)
+	m := newTestTransactionsModelWithCurrency(t, nil)
 	m, _ = m.Update(keyPress("n"))
 	m = typeStringT(m, "Rent")
 	m, _ = m.Update(keyPress("enter")) // -> stepTimestamp
@@ -118,27 +123,59 @@ func TestTransactionsModel_CreateValidation_BadAccountID(t *testing.T) {
 	}
 }
 
+// enterAccountAndCurrency advances past stepEntryAccount (typing acctID)
+// and stepEntryCurrency (confirming whatever's under the picker's cursor,
+// by default the first/only currency), landing on stepEntryValue.
+func enterAccountAndCurrency(m transactionsModel, acctID string) transactionsModel {
+	m = typeStringT(m, acctID)
+	m, _ = m.Update(keyPress("enter")) // -> stepEntryCurrency
+	m, _ = m.Update(keyPress("enter")) // confirm currency -> stepEntryValue
+	return m
+}
+
 func TestTransactionsModel_CreateValidation_BadValue(t *testing.T) {
-	m := newTestTransactionsModel(t, nil)
+	m := newTestTransactionsModelWithCurrency(t, nil)
 	m, _ = m.Update(keyPress("n"))
 	m = typeStringT(m, "Rent")
 	m, _ = m.Update(keyPress("enter"))
 	m, _ = m.Update(keyPress("enter"))
-	m = typeStringT(m, "1")
-	m, _ = m.Update(keyPress("enter")) // -> stepEntryValue
+	m = enterAccountAndCurrency(m, "1")
 	m = typeStringT(m, "abc")
 	m, _ = m.Update(keyPress("enter"))
 
-	if m.err != "value must be an integer number of cents" {
-		t.Fatalf("err = %q, want %q", m.err, "value must be an integer number of cents")
+	if m.err != "amount must be an integer" {
+		t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
 	}
 	if m.step != stepEntryValue {
 		t.Fatalf("step = %v, want stepEntryValue", m.step)
 	}
 }
 
+func TestTransactionsModel_CreateValidation_BadCurrencySelection(t *testing.T) {
+	// A currencyPicker with zero rows (e.g. currencies somehow empty by
+	// the time this step is reached) must refuse to advance rather than
+	// pick a nonexistent currency.
+	m := newTestTransactionsModelWithCurrency(t, nil)
+	m, _ = m.Update(keyPress("n"))
+	m = typeStringT(m, "Rent")
+	m, _ = m.Update(keyPress("enter"))
+	m, _ = m.Update(keyPress("enter"))
+	m = typeStringT(m, "1")
+	m, _ = m.Update(keyPress("enter")) // -> stepEntryCurrency
+	m.currencyPicker.SetRows(nil)      // simulate no rows under the cursor
+	m.currencies = nil
+
+	m, _ = m.Update(keyPress("enter"))
+	if m.err != "pick a currency" {
+		t.Fatalf("err = %q, want %q", m.err, "pick a currency")
+	}
+	if m.step != stepEntryCurrency {
+		t.Fatalf("step = %v, want stepEntryCurrency", m.step)
+	}
+}
+
 func TestTransactionsModel_CreateValidation_BadTimestamp(t *testing.T) {
-	m := newTestTransactionsModel(t, nil)
+	m := newTestTransactionsModelWithCurrency(t, nil)
 	m, _ = m.Update(keyPress("n"))
 	m = typeStringT(m, "Rent")
 	m, _ = m.Update(keyPress("enter")) // -> stepTimestamp
@@ -147,13 +184,11 @@ func TestTransactionsModel_CreateValidation_BadTimestamp(t *testing.T) {
 
 	// Two balanced entries, so submitCreate gets past the entry checks and
 	// actually reaches timestamp parsing.
-	m = typeStringT(m, "1")
-	m, _ = m.Update(keyPress("enter")) // -> stepEntryValue
+	m = enterAccountAndCurrency(m, "1")
 	m = typeStringT(m, "1000")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("y"))     // add another entry -> stepEntryAccount
-	m = typeStringT(m, "2")
-	m, _ = m.Update(keyPress("enter")) // -> stepEntryValue
+	m = enterAccountAndCurrency(m, "2")
 	m = typeStringT(m, "-1000")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("n"))     // submit
@@ -169,7 +204,7 @@ func TestTransactionsModel_CreateValidation_BadTimestamp(t *testing.T) {
 
 func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 	var gotBody client.Transaction
-	m := newTestTransactionsModel(t, func(w http.ResponseWriter, r *http.Request) {
+	m := newTestTransactionsModelWithCurrency(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusCreated)
 		gotBody.ID = 1
@@ -181,21 +216,19 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 	m, _ = m.Update(keyPress("enter")) // -> stepTimestamp
 	m, _ = m.Update(keyPress("enter")) // blank -> now, -> stepEntryAccount
 
-	m = typeStringT(m, "1")
-	m, _ = m.Update(keyPress("enter")) // -> stepEntryValue
+	m = enterAccountAndCurrency(m, "1")
 	m = typeStringT(m, "1000")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 
 	if m.step != stepConfirmMore {
 		t.Fatalf("step = %v, want stepConfirmMore", m.step)
 	}
-	if len(m.pendingEntries) != 1 || m.pendingEntries[0].Value != 1000 {
+	if len(m.pendingEntries) != 1 || m.pendingEntries[0].Amount != 1000 || m.pendingEntries[0].CurrencyID != testUSD.ID {
 		t.Fatalf("pendingEntries = %+v", m.pendingEntries)
 	}
 
 	m, _ = m.Update(keyPress("y")) // add another entry -> stepEntryAccount
-	m = typeStringT(m, "2")
-	m, _ = m.Update(keyPress("enter")) // -> stepEntryValue
+	m = enterAccountAndCurrency(m, "2")
 	m = typeStringT(m, "-1000")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 
@@ -214,6 +247,9 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 	if gotBody.Description != "Invoice #1" || len(gotBody.Entries) != 2 {
 		t.Fatalf("request body = %+v", gotBody)
 	}
+	if gotBody.Entries[0].CurrencyID != testUSD.ID || gotBody.Entries[1].CurrencyID != testUSD.ID {
+		t.Fatalf("request entries currency = %+v, want both %d", gotBody.Entries, testUSD.ID)
+	}
 
 	m, cmd = m.Update(mutated)
 	if m.mode != transactionsModeList {
@@ -224,8 +260,50 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 	}
 }
 
+// TestTransactionsModel_CreateRejectsUnbalancedPerCurrency mirrors the
+// backend's own invariant: entries must sum to zero within each
+// currency, not just in total.
+func TestTransactionsModel_CreateRejectsUnbalancedPerCurrency(t *testing.T) {
+	eur := client.Currency{ID: 11, Name: "EUR", SymbolPosition: "after", DecimalSeparator: ",", DecimalPlaces: 2}
+	m := newTestTransactionsModel(t, nil)
+	m.currencies = []client.Currency{testUSD, eur}
+	m.currencyIndex = indexCurrencies(m.currencies)
+
+	m, _ = m.Update(keyPress("n"))
+	m = typeStringT(m, "Mixed")
+	m, _ = m.Update(keyPress("enter")) // -> stepTimestamp
+	m, _ = m.Update(keyPress("enter")) // -> stepEntryAccount
+
+	// USD leg: balanced (1000, -1000).
+	m = enterAccountAndCurrency(m, "1") // picks cursor 0 = testUSD
+	m = typeStringT(m, "1000")
+	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
+	m, _ = m.Update(keyPress("y"))
+	m = enterAccountAndCurrency(m, "2") // cursor 0 = testUSD again
+	m = typeStringT(m, "-1000")
+	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
+	m, _ = m.Update(keyPress("y"))
+
+	// EUR leg: deliberately unbalanced (500, only one entry).
+	m = typeStringT(m, "1")
+	m, _ = m.Update(keyPress("enter")) // -> stepEntryCurrency
+	m, _ = m.Update(keyPress("down"))  // move to EUR (cursor 1)
+	m, _ = m.Update(keyPress("enter")) // confirm EUR -> stepEntryValue
+	m = typeStringT(m, "500")
+	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
+
+	m, _ = m.Update(keyPress("n")) // submit: USD balances, EUR doesn't
+	if m.err == "" {
+		t.Fatal("expected a validation error for the unbalanced EUR leg")
+	}
+	if !strings.Contains(m.err, "EUR") {
+		t.Errorf("err = %q, want it to name the unbalanced currency (EUR)", m.err)
+	}
+}
+
 func TestTransactionsModel_DetailView(t *testing.T) {
 	m := newTestTransactionsModel(t, nil)
+	m.currencyIndex = testCurrencies
 	m.rows = []client.Transaction{{ID: 1, Description: "Invoice #1"}}
 	m.tbl.SetRows(transactionsToRows(m.rows))
 
@@ -241,6 +319,25 @@ func TestTransactionsModel_DetailView(t *testing.T) {
 	m, _ = m.Update(keyPress("x"))
 	if m.mode != transactionsModeList {
 		t.Fatalf("mode after leaving detail = %v, want transactionsModeList", m.mode)
+	}
+}
+
+func TestTransactionsModel_DetailViewShowsFormattedAmounts(t *testing.T) {
+	m := newTestTransactionsModel(t, nil)
+	m.currencyIndex = testCurrencies
+	m.detail = client.Transaction{
+		ID:          1,
+		Description: "Invoice #1",
+		Entries: []client.Entry{
+			{AccountID: 1, Amount: 1000, CurrencyID: testUSD.ID},
+			{AccountID: 2, Amount: -1000, CurrencyID: testUSD.ID},
+		},
+	}
+	m.mode = transactionsModeDetail
+
+	view := m.View()
+	if !strings.Contains(view, "USD10.00") || !strings.Contains(view, "USD-10.00") {
+		t.Errorf("detail view should show currency-formatted amounts, got:\n%s", view)
 	}
 }
 

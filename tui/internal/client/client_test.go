@@ -84,7 +84,7 @@ func TestGetAccountLedger(t *testing.T) {
 			t.Errorf("got %s %s, want GET /accounts/7/transactions", r.Method, r.URL.Path)
 		}
 		json.NewEncoder(w).Encode([]client.LedgerEntry{
-			{TransactionID: 1, Description: "Invoice #1", Value: 1000, Balance: 1000},
+			{TransactionID: 1, Description: "Invoice #1", Amount: 1000, CurrencyID: 5, Balance: 1000},
 		})
 	})
 
@@ -145,8 +145,8 @@ func TestCreateTransaction(t *testing.T) {
 	created, err := c.CreateTransaction(context.Background(), client.Transaction{
 		Description: "Invoice #1",
 		Entries: []client.Entry{
-			{AccountID: 1, Value: 1000},
-			{AccountID: 2, Value: -1000},
+			{AccountID: 1, Amount: 1000, CurrencyID: 5},
+			{AccountID: 2, Amount: -1000, CurrencyID: 5},
 		},
 	})
 	if err != nil {
@@ -191,6 +191,61 @@ func TestDo_UnexpectedStatusWithoutErrorBody(t *testing.T) {
 	_, err := c.ListAccounts(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("ListAccounts error = %v, want it to mention the status code", err)
+	}
+}
+
+func TestListCurrencies(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/currencies" {
+			t.Errorf("got %s %s, want GET /currencies", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]client.Currency{{ID: 1, Name: "US Dollar"}})
+	})
+
+	currencies, err := c.ListCurrencies(context.Background())
+	if err != nil {
+		t.Fatalf("ListCurrencies: %v", err)
+	}
+	if len(currencies) != 1 || currencies[0].Name != "US Dollar" {
+		t.Fatalf("ListCurrencies = %+v", currencies)
+	}
+}
+
+func TestCreateCurrency(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/currencies" {
+			t.Errorf("got %s %s, want POST /currencies", r.Method, r.URL.Path)
+		}
+		var got client.Currency
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if got.Name != "Euro" {
+			t.Errorf("request body = %+v", got)
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(client.Currency{ID: 1, Name: got.Name})
+	})
+
+	created, err := c.CreateCurrency(context.Background(), client.Currency{Name: "Euro"})
+	if err != nil {
+		t.Fatalf("CreateCurrency: %v", err)
+	}
+	if created.ID != 1 {
+		t.Fatalf("CreateCurrency = %+v", created)
+	}
+}
+
+func TestDeleteCurrency(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/currencies/9" {
+			t.Errorf("got %s %s, want DELETE /currencies/9", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if err := c.DeleteCurrency(context.Background(), 9); err != nil {
+		t.Fatalf("DeleteCurrency: %v", err)
 	}
 }
 
