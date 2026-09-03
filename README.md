@@ -189,10 +189,13 @@ refreshes, `Enter` opens a transaction's entries or an account's ledger
 (Currencies has no such drill-down). `Esc` cancels a form or backs out of
 a ledger/detail view, `q` quits. Accounts and Currencies also support `e`
 to edit the selected record and `d` to delete it; Transactions only
-supports `d` (no edit). Accounts additionally support `Shift+↑`/`Shift+↓`
-to move the selected account up/down among its siblings (see `POST
-/accounts/{id}/move` above) — the selection follows the account as it
-moves, and moving it past the first/last sibling is a no-op.
+supports `d` (no edit). Accounts additionally support `K`/`J` to move the
+selected account up/down among its siblings (see `POST /accounts/{id}/move`
+above) — the selection follows the account as it moves, and moving it past
+the first/last sibling is a no-op. These are capital letters, not
+`Shift`+arrow: some terminals (e.g. xfce4-terminal) don't report Shift
+held with an arrow key as a distinguishable event, but every terminal
+reports a capital letter as a plain keystroke.
 
 Editing reuses the same pop-up as creating (see below), pre-filled with
 the selected record's current values, and submits a PUT instead of a POST

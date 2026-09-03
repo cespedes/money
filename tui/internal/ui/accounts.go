@@ -68,7 +68,7 @@ type accountsModel struct {
 
 	// selectAfterReload, when set, is an account ID whose row the cursor
 	// should jump back to the next time accountsLoadedMsg arrives — used
-	// after a move (see "shift+up"/"shift+down" in updateList) so the
+	// after a move (see "K"/"J" in updateList) so the
 	// moved account visibly stays selected instead of the cursor
 	// pointing at whichever account now occupies its old row index.
 	selectAfterReload *int64
@@ -354,13 +354,17 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.mode = accountsModeConfirmDelete
 		return m, nil
-	case "shift+up", "shift+down":
+	case "K", "J":
+		// Capital letters, not Shift+Up/Shift+Down: some terminals (e.g.
+		// xfce4-terminal) don't report Shift held with an arrow key as a
+		// distinguishable event, but every terminal reports a capital
+		// letter as a plain, unmodified keystroke.
 		row := m.table.Cursor()
 		if row < 0 || row >= len(m.rows) {
 			return m, nil
 		}
 		direction := client.MoveUp
-		if msg.String() == "shift+down" {
+		if msg.String() == "J" {
 			direction = client.MoveDown
 		}
 		id := m.rows[row].ID

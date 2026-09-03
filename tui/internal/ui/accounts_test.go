@@ -38,10 +38,6 @@ func keyPress(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
-	case "shift+up":
-		return tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}
-	case "shift+down":
-		return tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	default:
@@ -620,7 +616,7 @@ func TestAccountsModel_MoveUpDown(t *testing.T) {
 	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 
 	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Liabilities)
-	m, cmd := m.Update(keyPress("shift+up"))
+	m, cmd := m.Update(keyPress("K"))
 	if cmd == nil {
 		t.Fatal("expected a command to submit the move request")
 	}
@@ -653,14 +649,35 @@ func TestAccountsModel_MoveUpDown(t *testing.T) {
 	}
 }
 
+func TestAccountsModel_MoveDown(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+
+	m, cmd := m.Update(keyPress("J")) // cursor starts on row 0 (Assets)
+	if cmd == nil {
+		t.Fatal("expected a command to submit the move request")
+	}
+	cmd()
+	if gotPath != "/accounts/1/move" || gotBody["direction"] != "down" {
+		t.Fatalf("got path=%q body=%v, want /accounts/1/move with direction=down", gotPath, gotBody)
+	}
+}
+
 func TestAccountsModel_MoveNoRowsIsNoop(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
 
-	m, cmd := m.Update(keyPress("shift+up"))
+	m, cmd := m.Update(keyPress("K"))
 	if cmd != nil {
 		t.Fatal("expected no command with no rows selected")
 	}
-	m, cmd = m.Update(keyPress("shift+down"))
+	m, cmd = m.Update(keyPress("J"))
 	if cmd != nil {
 		t.Fatal("expected no command with no rows selected")
 	}
