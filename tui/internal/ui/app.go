@@ -159,17 +159,22 @@ func (m App) footer() string {
 		case accountsModeLedger:
 			return "↑/↓: navigate  •  esc/q: back"
 		case accountsModeCreate:
-			return "tab/←/→: switch field  •  ↑/↓: choose parent  •  enter: create  •  esc: cancel"
+			return fmt.Sprintf("tab/←/→: switch field  •  ↑/↓: choose parent  •  enter: %s  •  esc: cancel", submitVerb(m.accounts.editingID))
 		}
 	case tabCurrencies:
 		if m.currencies.mode == currenciesModeCreate {
-			return "tab/←/→: switch field  •  enter: create  •  esc: cancel"
+			return fmt.Sprintf("tab/←/→: switch field  •  enter: %s  •  esc: cancel", submitVerb(m.currencies.editingID))
 		}
 	}
 	if m.currentEditing() {
 		return "enter: confirm field  •  esc: cancel"
 	}
-	base := "tab: switch view  •  ↑/↓: navigate  •  r: refresh  •  n: new  •  d: delete  •  q: quit"
+	base := "tab: switch view  •  ↑/↓: navigate  •  r: refresh  •  n: new"
+	switch m.active {
+	case tabAccounts, tabCurrencies:
+		base = fmt.Sprintf("%s  •  e: edit", base)
+	}
+	base = fmt.Sprintf("%s  •  d: delete  •  q: quit", base)
 	switch m.active {
 	case tabAccounts:
 		base = fmt.Sprintf("%s  •  enter: view transactions", base)
@@ -177,4 +182,15 @@ func (m App) footer() string {
 		base = fmt.Sprintf("%s  •  enter: view details", base)
 	}
 	return base
+}
+
+// submitVerb picks the footer hint's verb for the "new"/"edit" pop-up
+// shared by Accounts and Currencies (see accountsModel.startEdit,
+// currenciesModel.startEdit): "create" while editingID is nil, "save"
+// once it's been set to the record being edited.
+func submitVerb(editingID *int64) string {
+	if editingID != nil {
+		return "save"
+	}
+	return "create"
 }

@@ -454,6 +454,118 @@ func TestAccountsModel_DKeyRequiresRows(t *testing.T) {
 	}
 }
 
+func TestAccountsModel_EKeyRequiresRows(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+
+	m, _ = m.Update(keyPress("e"))
+	if m.mode != accountsModeList {
+		t.Fatalf("mode with no rows = %v, want accountsModeList (e should be a no-op)", m.mode)
+	}
+
+	m.rows = []client.Account{{ID: 1, Name: "Cash"}}
+	m, _ = m.Update(keyPress("e"))
+	if m.mode != accountsModeCreate {
+		t.Fatalf("mode with rows = %v, want accountsModeCreate", m.mode)
+	}
+}
+
+// TestAccountsModel_EKeyPrefillsForm checks that "e" opens the same
+// pop-up as "n", pre-filled with the selected account's current values —
+// including its parent, preselected in the dropdown — and that the
+// account itself is left out of its own Parent options (selecting it
+// would form a single-node cycle).
+func TestAccountsModel_EKeyPrefillsForm(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 30)
+	assetsID := int64(1)
+	code := "1000"
+	m.rows = []client.Account{
+		{ID: 1, Name: "Assets"},
+		{ID: 2, Name: "Cash", Code: &code, ParentID: &assetsID},
+	}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Cash)
+	m, _ = m.Update(keyPress("e"))
+
+	if m.mode != accountsModeCreate {
+		t.Fatalf("mode = %v, want accountsModeCreate", m.mode)
+	}
+	if m.editingID == nil || *m.editingID != 2 {
+		t.Fatalf("editingID = %v, want 2", m.editingID)
+	}
+	if got := m.inputs[fieldAccountName].Value(); got != "Cash" {
+		t.Errorf("Name = %q, want %q", got, "Cash")
+	}
+	if got := m.inputs[fieldAccountCode].Value(); got != "1000" {
+		t.Errorf("Code = %q, want %q", got, "1000")
+	}
+	// Assets is Cash's parent and comes first in parentOptions (Cash
+	// itself is excluded), so cursor 1 is Assets.
+	if got := m.parentPicker.Cursor(); got != 1 {
+		t.Fatalf("parentPicker cursor = %d, want 1 (Assets)", got)
+	}
+
+	popup := m.createPopup()
+	if !strings.Contains(popup, "Edit account") {
+		t.Errorf("popup should be titled %q, got:\n%s", "Edit account", popup)
+	}
+	if strings.Contains(popup, "#2  Cash") {
+		t.Errorf("popup's Parent dropdown should not offer the account being edited as its own parent, got:\n%s", popup)
+	}
+	if !strings.Contains(popup, "#1  Assets") {
+		t.Errorf("popup's Parent dropdown should still offer other accounts, got:\n%s", popup)
+	}
+}
+
+func TestAccountsModel_EditSubmitsUpdate(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotAccount client.Account
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotAccount)
+		json.NewEncoder(w).Encode(client.Account{ID: 2, Name: gotAccount.Name})
+	})
+	m.SetSize(100, 30)
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Cash"}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+
+	m, _ = m.Update(keyPress("down"))
+	m, _ = m.Update(keyPress("e"))
+	m, _ = m.Update(keyPress("tab")) // -> Name
+	for range "Cash" {
+		m, _ = m.Update(keyPress("backspace"))
+	}
+	m = typeString(m, "Petty Cash")
+
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the update request")
+	}
+	msg := cmd()
+	mutated, ok := msg.(accountMutatedMsg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/accounts/2" {
+		t.Fatalf("got %s %s, want PUT /accounts/2", gotMethod, gotPath)
+	}
+	if gotAccount.Name != "Petty Cash" {
+		t.Fatalf("request body = %+v", gotAccount)
+	}
+
+	m, cmd = m.Update(mutated)
+	if m.mode != accountsModeList {
+		t.Fatalf("mode = %v, want accountsModeList", m.mode)
+	}
+	if m.editingID != nil {
+		t.Fatalf("editingID = %v, want nil after a successful edit", m.editingID)
+	}
+	if cmd == nil {
+		t.Fatal("expected a reload command after a successful edit")
+	}
+}
+
 func TestLedgerToRows(t *testing.T) {
 	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	rows := ledgerToRows([]client.LedgerEntry{

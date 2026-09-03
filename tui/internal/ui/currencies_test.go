@@ -289,6 +289,105 @@ func TestCurrenciesModel_DKeyRequiresRows(t *testing.T) {
 	}
 }
 
+func TestCurrenciesModel_EKeyRequiresRows(t *testing.T) {
+	m := newTestCurrenciesModel(t, nil)
+
+	m, _ = m.Update(keyPress("e"))
+	if m.mode != currenciesModeList {
+		t.Fatalf("mode with no rows = %v, want currenciesModeList (e should be a no-op)", m.mode)
+	}
+
+	m.rows = []client.Currency{{ID: 1, Name: "USD"}}
+	m, _ = m.Update(keyPress("e"))
+	if m.mode != currenciesModeCreate {
+		t.Fatalf("mode with rows = %v, want currenciesModeCreate", m.mode)
+	}
+}
+
+// TestCurrenciesModel_EKeyPrefillsForm checks that "e" opens the same
+// pop-up as "n", pre-filled with the selected currency's current values —
+// Format reconstructed from its stored rules, the inverse of what
+// submitForm parses back out of it (see parseCurrencyFormat).
+func TestCurrenciesModel_EKeyPrefillsForm(t *testing.T) {
+	m := newTestCurrenciesModel(t, nil)
+	isin := "EU0000000001"
+	m.rows = []client.Currency{
+		{ID: 1, Name: "USD"},
+		{ID: 2, Name: "EUR", SymbolBefore: false, SymbolSpace: true, ThousandsSeparator: ".", DecimalSeparator: ",", DecimalPlaces: 2, ISIN: &isin},
+	}
+	m.table.SetRows(currenciesToRows(m.rows))
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (EUR)
+	m, _ = m.Update(keyPress("e"))
+
+	if m.mode != currenciesModeCreate {
+		t.Fatalf("mode = %v, want currenciesModeCreate", m.mode)
+	}
+	if m.editingID == nil || *m.editingID != 2 {
+		t.Fatalf("editingID = %v, want 2", m.editingID)
+	}
+	if got := m.inputs[fieldCurrencyName].Value(); got != "EUR" {
+		t.Errorf("Name = %q, want %q", got, "EUR")
+	}
+	if got := m.inputs[fieldCurrencyFormat].Value(); got != "1.234,00 EUR" {
+		t.Errorf("Format = %q, want %q", got, "1.234,00 EUR")
+	}
+	if got := m.inputs[fieldCurrencyISIN].Value(); got != isin {
+		t.Errorf("ISIN = %q, want %q", got, isin)
+	}
+
+	popup := m.createPopup()
+	if !strings.Contains(popup, "Edit currency") {
+		t.Errorf("popup should be titled %q, got:\n%s", "Edit currency", popup)
+	}
+}
+
+func TestCurrenciesModel_EditSubmitsUpdate(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody client.Currency
+	m := newTestCurrenciesModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(client.Currency{ID: 1, Name: gotBody.Name})
+	})
+	m.rows = []client.Currency{{ID: 1, Name: "USD", SymbolBefore: true, DecimalPlaces: 2}}
+	m.table.SetRows(currenciesToRows(m.rows))
+
+	m, _ = m.Update(keyPress("e"))
+	m, _ = m.Update(keyPress("tab")) // -> Format
+	for range m.inputs[fieldCurrencyFormat].Value() {
+		m, _ = m.Update(keyPress("backspace"))
+	}
+	m = typeStringC(m, "1234 USD")
+
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the update request")
+	}
+	msg := cmd()
+	mutated, ok := msg.(currencyMutatedMsg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/currencies/1" {
+		t.Fatalf("got %s %s, want PUT /currencies/1", gotMethod, gotPath)
+	}
+	if gotBody.SymbolBefore || gotBody.DecimalPlaces != 0 {
+		t.Fatalf("request body = %+v", gotBody)
+	}
+
+	m, cmd = m.Update(mutated)
+	if m.mode != currenciesModeList {
+		t.Fatalf("mode = %v, want currenciesModeList", m.mode)
+	}
+	if m.editingID != nil {
+		t.Fatalf("editingID = %v, want nil after a successful edit", m.editingID)
+	}
+	if cmd == nil {
+		t.Fatal("expected a reload command after a successful edit")
+	}
+}
+
 func TestCurrenciesModel_ConfirmDeleteYesAndNo(t *testing.T) {
 	deleted := false
 	m := newTestCurrenciesModel(t, func(w http.ResponseWriter, r *http.Request) {

@@ -173,10 +173,20 @@ one row per currency.
 ## TUI
 
 `Tab`/`Shift+Tab` cycle through the Accounts, Transactions, and Currencies
-views. Within a view: `↑`/`↓` navigate, `n` creates a new record, `d`
-deletes the selected one, `r` refreshes, `Enter` opens a transaction's
-entries or an account's ledger (Currencies has no such drill-down). `Esc`
-cancels a form or backs out of a ledger/detail view, `q` quits.
+views. Within a view: `↑`/`↓` navigate, `n` creates a new record, `r`
+refreshes, `Enter` opens a transaction's entries or an account's ledger
+(Currencies has no such drill-down). `Esc` cancels a form or backs out of
+a ledger/detail view, `q` quits. Accounts and Currencies also support `e`
+to edit the selected record and `d` to delete it; Transactions only
+supports `d` (no edit).
+
+Editing reuses the same pop-up as creating (see below), pre-filled with
+the selected record's current values, and submits a PUT instead of a POST
+on `Enter` — the pop-up's title and the footer's hint ("save" instead of
+"create") reflect which mode it's in. Editing an account leaves that
+account out of its own Parent dropdown, since choosing itself would form
+a single-node cycle (nothing else currently stops a cycle forming further
+up the hierarchy, e.g. through a grandparent).
 
 Every displayed amount is formatted per its own currency's rules (name
 position/spacing, thousands/decimal separators, decimal places) via

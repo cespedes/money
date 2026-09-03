@@ -65,6 +65,31 @@ func TestCreateAccount(t *testing.T) {
 	}
 }
 
+func TestUpdateAccount(t *testing.T) {
+	code := "1000"
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/accounts/3" {
+			t.Errorf("got %s %s, want PUT /accounts/3", r.Method, r.URL.Path)
+		}
+		var got client.Account
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if got.Name != "Petty Cash" || got.Code == nil || *got.Code != "1000" {
+			t.Errorf("request body = %+v", got)
+		}
+		json.NewEncoder(w).Encode(client.Account{ID: 3, Name: got.Name, Code: got.Code})
+	})
+
+	updated, err := c.UpdateAccount(context.Background(), 3, client.Account{Name: "Petty Cash", Code: &code})
+	if err != nil {
+		t.Fatalf("UpdateAccount: %v", err)
+	}
+	if updated.ID != 3 || updated.Name != "Petty Cash" {
+		t.Fatalf("UpdateAccount = %+v", updated)
+	}
+}
+
 func TestDeleteAccount(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/accounts/42" {
@@ -233,6 +258,30 @@ func TestCreateCurrency(t *testing.T) {
 	}
 	if created.ID != 1 {
 		t.Fatalf("CreateCurrency = %+v", created)
+	}
+}
+
+func TestUpdateCurrency(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/currencies/9" {
+			t.Errorf("got %s %s, want PUT /currencies/9", r.Method, r.URL.Path)
+		}
+		var got client.Currency
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if got.Name != "United States Dollar" {
+			t.Errorf("request body = %+v", got)
+		}
+		json.NewEncoder(w).Encode(client.Currency{ID: 9, Name: got.Name})
+	})
+
+	updated, err := c.UpdateCurrency(context.Background(), 9, client.Currency{Name: "United States Dollar"})
+	if err != nil {
+		t.Fatalf("UpdateCurrency: %v", err)
+	}
+	if updated.ID != 9 || updated.Name != "United States Dollar" {
+		t.Fatalf("UpdateCurrency = %+v", updated)
 	}
 }
 

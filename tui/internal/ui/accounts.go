@@ -43,9 +43,19 @@ type accountsModel struct {
 	status     string
 	err        string
 
-	createFocus  createFocus
-	parentPicker table.Model // dropdown of "(none)" + m.rows, for the parent field
-	inputs       []textinput.Model
+	createFocus createFocus
+	// editingID is the account being edited's ID, or nil while creating a
+	// new one — the same pop-up (see createPopup/startEdit) is reused for
+	// both, and submitCreate branches on this to POST or PUT.
+	editingID *int64
+	// parentOptions is whichever accounts are currently offered as a
+	// parent choice — m.rows when creating, or m.rows with the account
+	// being edited filtered out (see startEdit, accountsExcluding) — kept
+	// alongside parentPicker so selectedParentID can map its cursor back
+	// to an account ID regardless of which case built the dropdown.
+	parentOptions []client.Account
+	parentPicker  table.Model // dropdown of "(none)" + parentOptions, for the parent field
+	inputs        []textinput.Model
 
 	ledgerAccount client.Account
 	ledgerEntries []client.LedgerEntry
@@ -164,9 +174,13 @@ func (m *accountsModel) syncParentPickerHeight() {
 	if available < 3 {
 		available = 3
 	}
+	numOptions := len(m.rows)
+	if m.editingID != nil {
+		numOptions-- // the account being edited is excluded from its own Parent dropdown
+	}
 	// SetHeight's argument covers the table's own header row too, on top
-	// of the data rows actually wanted: "(none)" plus every account.
-	want := len(m.rows) + 1 /* "(none)" */ + 1 /* header row */
+	// of the data rows actually wanted: "(none)" plus every option.
+	want := numOptions + 1 /* "(none)" */ + 1 /* header row */
 	if want > available {
 		want = available
 	}
@@ -251,6 +265,7 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		}
 		m.err = ""
 		m.mode = accountsModeList
+		m.editingID = nil
 		return m, m.loadAccounts
 
 	case ledgerLoadedMsg:
@@ -296,7 +311,9 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		return m, m.loadAccounts
 	case "n":
 		m.mode = accountsModeCreate
-		m.parentPicker.SetRows(parentDropdownRows(m.rows))
+		m.editingID = nil
+		m.parentOptions = m.rows
+		m.parentPicker.SetRows(parentDropdownRows(m.parentOptions))
 		m.parentPicker.SetCursor(0)
 		m.syncParentPickerHeight()
 		for i := range m.inputs {
@@ -304,6 +321,16 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.setCreateFocus(focusParent)
 		m.err = ""
+		return m, nil
+	case "e":
+		if len(m.rows) == 0 {
+			return m, nil
+		}
+		row := m.table.Cursor()
+		if row < 0 || row >= len(m.rows) {
+			return m, nil
+		}
+		m.startEdit(m.rows[row])
 		return m, nil
 	case "d":
 		if len(m.rows) == 0 {
@@ -350,10 +377,11 @@ func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = accountsModeList
+		m.editingID = nil
 		m.err = ""
 		return m, nil
 	case "enter":
-		return m.submitCreate()
+		return m.submitForm()
 	case "tab", "right":
 		m.setCreateFocus((m.createFocus + 1) % 3)
 		return m, nil
@@ -394,17 +422,68 @@ func (m *accountsModel) setCreateFocus(f createFocus) {
 }
 
 // selectedParentID maps a parentPicker cursor position to the chosen
-// parent account ID. Index 0 is always the "(none)" option.
-func selectedParentID(choice int, accounts []client.Account) *int64 {
+// parent account ID, within options (m.parentOptions, not necessarily
+// m.rows — see startEdit). Index 0 is always the "(none)" option.
+func selectedParentID(choice int, options []client.Account) *int64 {
 	i := choice - 1
-	if i < 0 || i >= len(accounts) {
+	if i < 0 || i >= len(options) {
 		return nil
 	}
-	id := accounts[i].ID
+	id := options[i].ID
 	return &id
 }
 
-func (m accountsModel) submitCreate() (accountsModel, tea.Cmd) {
+// parentCursorFor is selectedParentID's inverse, used to preselect an
+// account's current parent when opening it for editing (see startEdit).
+// Falls back to 0 ("(none)") if parentID isn't found in options — e.g. it
+// was filtered out because it's the account being edited itself.
+func parentCursorFor(parentID *int64, options []client.Account) int {
+	if parentID == nil {
+		return 0
+	}
+	for i, a := range options {
+		if a.ID == *parentID {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// accountsExcluding returns accounts with the one matching excludeID left
+// out, preserving order. Used to keep an account being edited out of its
+// own Parent dropdown — choosing itself would form a single-node cycle.
+func accountsExcluding(accounts []client.Account, excludeID int64) []client.Account {
+	out := make([]client.Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a.ID != excludeID {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// startEdit opens the same pop-up as "n" (see createPopup), pre-filled
+// with account's current values, for submitForm to PUT back on enter
+// instead of POSTing a new account.
+func (m *accountsModel) startEdit(account client.Account) {
+	m.mode = accountsModeCreate
+	id := account.ID
+	m.editingID = &id
+	m.parentOptions = accountsExcluding(m.rows, account.ID)
+	m.parentPicker.SetRows(parentDropdownRows(m.parentOptions))
+	m.parentPicker.SetCursor(parentCursorFor(account.ParentID, m.parentOptions))
+	m.syncParentPickerHeight()
+	m.inputs[fieldAccountName].SetValue(account.Name)
+	code := ""
+	if account.Code != nil {
+		code = *account.Code
+	}
+	m.inputs[fieldAccountCode].SetValue(code)
+	m.setCreateFocus(focusParent)
+	m.err = ""
+}
+
+func (m accountsModel) submitForm() (accountsModel, tea.Cmd) {
 	name := strings.TrimSpace(m.inputs[fieldAccountName].Value())
 	if name == "" {
 		m.err = "name is required"
@@ -413,7 +492,7 @@ func (m accountsModel) submitCreate() (accountsModel, tea.Cmd) {
 	}
 	account := client.Account{
 		Name:     name,
-		ParentID: selectedParentID(m.parentPicker.Cursor(), m.rows),
+		ParentID: selectedParentID(m.parentPicker.Cursor(), m.parentOptions),
 	}
 	if code := strings.TrimSpace(m.inputs[fieldAccountCode].Value()); code != "" {
 		account.Code = &code
@@ -421,6 +500,13 @@ func (m accountsModel) submitCreate() (accountsModel, tea.Cmd) {
 
 	m.err = ""
 	c := m.client
+	if m.editingID != nil {
+		id := *m.editingID
+		return m, func() tea.Msg {
+			_, err := c.UpdateAccount(context.Background(), id, account)
+			return accountMutatedMsg{err: err}
+		}
+	}
 	return m, func() tea.Msg {
 		_, err := c.CreateAccount(context.Background(), account)
 		return accountMutatedMsg{err: err}
@@ -577,17 +663,22 @@ func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID) []table
 	return rows
 }
 
-// createPopup renders the "new account" form as a bordered, table-shaped
-// pop-up: a header row naming the three fields (Parent, Name, Code) above
-// a row of Name/Code's fixed-width values, with the focused column
-// highlighted. Parent has no value of its own in that row — while it has
-// focus, a dropdown listing "(none)" plus every existing account is shown
-// below instead, with the currently chosen one highlighted by the
-// dropdown's own cursor — sized (see syncParentPickerHeight) to show them
-// all at once, or as many as fit in the window. It's meant to be
-// composited over the accounts list via overlayCentered, not shown in
-// place of it.
+// createPopup renders the "new"/"edit account" form (see startEdit) as a
+// bordered, table-shaped pop-up: a header row naming the three fields
+// (Parent, Name, Code) above a row of Name/Code's fixed-width values,
+// with the focused column highlighted. Parent has no value of its own in
+// that row — while it has focus, a dropdown listing "(none)" plus every
+// eligible account is shown below instead, with the currently chosen one
+// highlighted by the dropdown's own cursor — sized (see
+// syncParentPickerHeight) to show them all at once, or as many as fit in
+// the window. It's meant to be composited over the accounts list via
+// overlayCentered, not shown in place of it.
 func (m accountsModel) createPopup() string {
+	title := "New account"
+	if m.editingID != nil {
+		title = "Edit account"
+	}
+
 	headers := make([]string, 3)
 	for i, label := range []string{"Parent", "Name", "Code"} {
 		headers[i] = columnHeader(label, createFocus(i) == m.createFocus)
@@ -599,7 +690,7 @@ func (m accountsModel) createPopup() string {
 		m.inputs[fieldAccountCode].View(),
 	}
 
-	content := formLabelStyle.Render("New account") + "\n\n" +
+	content := formLabelStyle.Render(title) + "\n\n" +
 		strings.Join(headers, "  ") + "\n" +
 		strings.Join(values, "  ")
 	if m.createFocus == focusParent {

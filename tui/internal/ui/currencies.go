@@ -47,7 +47,11 @@ type currenciesModel struct {
 	err    string
 
 	createFocus currencyFocus
-	inputs      []textinput.Model // [name, format, isin]
+	// editingID is the currency being edited's ID, or nil while creating a
+	// new one — the same pop-up (see createPopup/startEdit) is reused for
+	// both, and submitForm branches on this to POST or PUT.
+	editingID *int64
+	inputs    []textinput.Model // [name, format, isin]
 }
 
 func newCurrenciesModel(c *client.Client) currenciesModel {
@@ -131,6 +135,7 @@ func (m currenciesModel) Update(msg tea.Msg) (currenciesModel, tea.Cmd) {
 		}
 		m.err = ""
 		m.mode = currenciesModeList
+		m.editingID = nil
 		return m, m.loadCurrencies
 
 	case tea.KeyMsg:
@@ -159,11 +164,22 @@ func (m currenciesModel) updateList(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 		return m, m.loadCurrencies
 	case "n":
 		m.mode = currenciesModeCreate
+		m.editingID = nil
 		for i := range m.inputs {
 			m.inputs[i].SetValue("")
 		}
 		m.setCreateFocus(focusCurrencyName)
 		m.err = ""
+		return m, nil
+	case "e":
+		if len(m.rows) == 0 {
+			return m, nil
+		}
+		row := m.table.Cursor()
+		if row < 0 || row >= len(m.rows) {
+			return m, nil
+		}
+		m.startEdit(m.rows[row])
 		return m, nil
 	case "d":
 		if len(m.rows) == 0 {
@@ -185,10 +201,11 @@ func (m currenciesModel) updateCreate(msg tea.KeyMsg) (currenciesModel, tea.Cmd)
 	switch msg.String() {
 	case "esc":
 		m.mode = currenciesModeList
+		m.editingID = nil
 		m.err = ""
 		return m, nil
 	case "enter":
-		return m.submitCreate()
+		return m.submitForm()
 	case "tab", "right":
 		m.setCreateFocus((m.createFocus + 1) % numCurrencyFocusFields)
 		return m, nil
@@ -222,7 +239,27 @@ func (m *currenciesModel) setCreateFocus(f currencyFocus) {
 	m.inputs[fieldForFocus(f)].Focus()
 }
 
-func (m currenciesModel) submitCreate() (currenciesModel, tea.Cmd) {
+// startEdit opens the same pop-up as "n" (see createPopup), pre-filled
+// with cur's current values — Format is reconstructed from its stored
+// rules via Currency.Format/exampleAmount, the inverse of what submitForm
+// parses back out of it — for submitForm to PUT back on enter instead of
+// POSTing a new currency.
+func (m *currenciesModel) startEdit(cur client.Currency) {
+	m.mode = currenciesModeCreate
+	id := cur.ID
+	m.editingID = &id
+	m.inputs[fieldCurrencyName].SetValue(cur.Name)
+	m.inputs[fieldCurrencyFormat].SetValue(cur.Format(exampleAmount(cur.DecimalPlaces)))
+	isin := ""
+	if cur.ISIN != nil {
+		isin = *cur.ISIN
+	}
+	m.inputs[fieldCurrencyISIN].SetValue(isin)
+	m.setCreateFocus(focusCurrencyName)
+	m.err = ""
+}
+
+func (m currenciesModel) submitForm() (currenciesModel, tea.Cmd) {
 	name := strings.TrimSpace(m.inputs[fieldCurrencyName].Value())
 	if name == "" {
 		m.err = "name is required"
@@ -252,6 +289,13 @@ func (m currenciesModel) submitCreate() (currenciesModel, tea.Cmd) {
 
 	m.err = ""
 	c := m.client
+	if m.editingID != nil {
+		id := *m.editingID
+		return m, func() tea.Msg {
+			_, err := c.UpdateCurrency(context.Background(), id, cur)
+			return currencyMutatedMsg{err: err}
+		}
+	}
 	return m, func() tea.Msg {
 		_, err := c.CreateCurrency(context.Background(), cur)
 		return currencyMutatedMsg{err: err}
@@ -324,11 +368,17 @@ func formatAmount(amount int64, currencies currencyByID, currencyID int64) strin
 	return strconv.FormatInt(amount, 10) + " (?)"
 }
 
-// createPopup renders the "new currency" form as a bordered, table-shaped
-// pop-up: Name, Format, and ISIN as fixed-width columns with their names
-// above, the focused one highlighted. It's meant to be composited over
-// the currencies list via overlayCentered, not shown in place of it.
+// createPopup renders the "new"/"edit currency" form (see startEdit) as a
+// bordered, table-shaped pop-up: Name, Format, and ISIN as fixed-width
+// columns with their names above, the focused one highlighted. It's
+// meant to be composited over the currencies list via overlayCentered,
+// not shown in place of it.
 func (m currenciesModel) createPopup() string {
+	title := "New currency"
+	if m.editingID != nil {
+		title = "Edit currency"
+	}
+
 	labels := []string{"Name", "Format", "ISIN"}
 	focuses := []currencyFocus{focusCurrencyName, focusCurrencyFormat, focusCurrencyISIN}
 	values := []string{
@@ -342,7 +392,7 @@ func (m currenciesModel) createPopup() string {
 		headers[i] = columnHeader(l, focuses[i] == m.createFocus)
 	}
 
-	content := formLabelStyle.Render("New currency") + "\n\n" +
+	content := formLabelStyle.Render(title) + "\n\n" +
 		strings.Join(headers, "  ") + "\n" +
 		strings.Join(values, "  ")
 	if m.err != "" {

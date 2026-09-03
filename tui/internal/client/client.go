@@ -87,6 +87,12 @@ func (c *Client) CreateAccount(ctx context.Context, a Account) (Account, error) 
 	return created, err
 }
 
+func (c *Client) UpdateAccount(ctx context.Context, id int64, a Account) (Account, error) {
+	var updated Account
+	err := c.do(ctx, http.MethodPut, "/accounts/"+strconv.FormatInt(id, 10), a, &updated)
+	return updated, err
+}
+
 func (c *Client) DeleteAccount(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, "/accounts/"+strconv.FormatInt(id, 10), nil, nil)
 }
@@ -136,6 +142,12 @@ func (c *Client) CreateCurrency(ctx context.Context, cur Currency) (Currency, er
 	var created Currency
 	err := c.do(ctx, http.MethodPost, "/currencies", cur, &created)
 	return created, err
+}
+
+func (c *Client) UpdateCurrency(ctx context.Context, id int64, cur Currency) (Currency, error) {
+	var updated Currency
+	err := c.do(ctx, http.MethodPut, "/currencies/"+strconv.FormatInt(id, 10), cur, &updated)
+	return updated, err
 }
 
 func (c *Client) DeleteCurrency(ctx context.Context, id int64) error {
