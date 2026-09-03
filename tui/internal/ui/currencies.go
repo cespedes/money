@@ -26,7 +26,7 @@ type currencyFocus int
 
 const (
 	focusCurrencyName currencyFocus = iota
-	focusCurrencySymbolPosition
+	focusCurrencySymbolBefore
 	focusCurrencySymbolSpace
 	focusCurrencyDecimalPlaces
 	focusCurrencyThousandsSep
@@ -53,11 +53,11 @@ type currenciesModel struct {
 	status string
 	err    string
 
-	createFocus    currencyFocus
-	symbolPosition string
-	symbolSpace    bool
-	decimalPlaces  int
-	inputs         []textinput.Model // [name, thousandsSep, decimalSep, isin]
+	createFocus   currencyFocus
+	symbolBefore  bool
+	symbolSpace   bool
+	decimalPlaces int
+	inputs        []textinput.Model // [name, thousandsSep, decimalSep, isin]
 }
 
 func newCurrenciesModel(c *client.Client) currenciesModel {
@@ -177,7 +177,7 @@ func (m currenciesModel) updateList(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 		return m, m.loadCurrencies
 	case "n":
 		m.mode = currenciesModeCreate
-		m.symbolPosition = "before"
+		m.symbolBefore = true
 		m.symbolSpace = false
 		m.decimalPlaces = 2
 		for i := range m.inputs {
@@ -221,13 +221,9 @@ func (m currenciesModel) updateCreate(msg tea.KeyMsg) (currenciesModel, tea.Cmd)
 	}
 
 	switch m.createFocus {
-	case focusCurrencySymbolPosition:
+	case focusCurrencySymbolBefore:
 		if msg.String() == "up" || msg.String() == "down" {
-			if m.symbolPosition == "before" {
-				m.symbolPosition = "after"
-			} else {
-				m.symbolPosition = "before"
-			}
+			m.symbolBefore = !m.symbolBefore
 		}
 		return m, nil
 	case focusCurrencySymbolSpace:
@@ -293,7 +289,7 @@ func (m currenciesModel) submitCreate() (currenciesModel, tea.Cmd) {
 	}
 	cur := client.Currency{
 		Name:               name,
-		SymbolPosition:     m.symbolPosition,
+		SymbolBefore:       m.symbolBefore,
 		SymbolSpace:        m.symbolSpace,
 		ThousandsSeparator: m.inputs[fieldCurrencyThousandsSep].Value(),
 		DecimalSeparator:   m.inputs[fieldCurrencyDecimalSep].Value(),
@@ -342,7 +338,7 @@ func currenciesToRows(currencies []client.Currency) []table.Row {
 		rows = append(rows, table.Row{
 			strconv.FormatInt(c.ID, 10),
 			c.Name,
-			c.SymbolPosition,
+			symbolPositionText(c.SymbolBefore),
 			strconv.Itoa(c.DecimalPlaces),
 			isin,
 		})
@@ -380,6 +376,13 @@ func yesNo(b bool) string {
 	return "no"
 }
 
+func symbolPositionText(before bool) string {
+	if before {
+		return "before"
+	}
+	return "after"
+}
+
 // createPopup renders the "new currency" form as a bordered, table-shaped
 // pop-up: two rows of fixed-width fields (Name/Position/Space/Decimals,
 // then Thousands/Decimal separators/ISIN), each with its column header
@@ -387,10 +390,10 @@ func yesNo(b bool) string {
 // over the currencies list via overlayCentered, not shown in place of it.
 func (m currenciesModel) createPopup() string {
 	row1Labels := []string{"Name", "Position", "Space", "Decimals"}
-	row1Focus := []currencyFocus{focusCurrencyName, focusCurrencySymbolPosition, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces}
+	row1Focus := []currencyFocus{focusCurrencyName, focusCurrencySymbolBefore, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces}
 	row1Values := []string{
 		m.inputs[fieldCurrencyName].View(),
-		padOrTruncate(m.symbolPosition, createFieldWidth),
+		padOrTruncate(symbolPositionText(m.symbolBefore), createFieldWidth),
 		padOrTruncate(yesNo(m.symbolSpace), createFieldWidth),
 		padOrTruncate(strconv.Itoa(m.decimalPlaces), createFieldWidth),
 	}

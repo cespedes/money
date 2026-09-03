@@ -26,7 +26,7 @@ CREATE INDEX idx_accounts_parent_id ON accounts (parent_id);
 CREATE TABLE currencies (
     id                  BIGSERIAL PRIMARY KEY,
     name                TEXT NOT NULL,
-    symbol_position     TEXT NOT NULL DEFAULT 'after' CHECK (symbol_position IN ('before', 'after')),
+    symbol_before       BOOLEAN NOT NULL DEFAULT FALSE,
     symbol_space        BOOLEAN NOT NULL DEFAULT TRUE,
     thousands_separator TEXT NOT NULL DEFAULT '',
     decimal_separator   TEXT NOT NULL DEFAULT '.',

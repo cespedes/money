@@ -68,7 +68,7 @@ func createTestCurrency(t *testing.T, h http.Handler, name string) models.Curren
 	var c models.Currency
 	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{
 		Name:             name,
-		SymbolPosition:   "before",
+		SymbolBefore:     true,
 		DecimalSeparator: ".",
 		DecimalPlaces:    2,
 	}, &c)

@@ -120,9 +120,6 @@ func validateCurrency(c models.Currency) string {
 	if strings.TrimSpace(c.Name) == "" {
 		return "name is required"
 	}
-	if c.SymbolPosition != "before" && c.SymbolPosition != "after" {
-		return `symbol_position must be "before" or "after"`
-	}
 	if c.DecimalPlaces < 0 {
 		return "decimal_places cannot be negative"
 	}

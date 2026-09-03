@@ -30,7 +30,7 @@ func createTestCurrency(t *testing.T, s *store.Store, name string) models.Curren
 	t.Helper()
 	c, err := s.Currencies.Create(context.Background(), models.Currency{
 		Name:             name,
-		SymbolPosition:   "before",
+		SymbolBefore:     true,
 		SymbolSpace:      false,
 		DecimalSeparator: ".",
 		DecimalPlaces:    2,

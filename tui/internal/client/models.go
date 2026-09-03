@@ -34,7 +34,7 @@ type CurrencyAmount struct {
 type Currency struct {
 	ID                 int64   `json:"id"`
 	Name               string  `json:"name"`
-	SymbolPosition     string  `json:"symbol_position"` // "before" or "after"
+	SymbolBefore       bool    `json:"symbol_before"`
 	SymbolSpace        bool    `json:"symbol_space"`
 	ThousandsSeparator string  `json:"thousands_separator"`
 	DecimalSeparator   string  `json:"decimal_separator"`
@@ -72,7 +72,7 @@ func (c Currency) Format(amount int64) string {
 	if c.SymbolSpace {
 		space = " "
 	}
-	if c.SymbolPosition == "before" {
+	if c.SymbolBefore {
 		return c.Name + space + number
 	}
 	return number + space + c.Name

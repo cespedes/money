@@ -30,8 +30,8 @@ func typeStringC(m currenciesModel, s string) currenciesModel {
 func TestCurrenciesToRows(t *testing.T) {
 	isin := "US0000000001"
 	rows := currenciesToRows([]client.Currency{
-		{ID: 1, Name: "US Dollar", SymbolPosition: "before", DecimalPlaces: 2, ISIN: &isin},
-		{ID: 2, Name: "Euro", SymbolPosition: "after", DecimalPlaces: 2},
+		{ID: 1, Name: "US Dollar", SymbolBefore: true, DecimalPlaces: 2, ISIN: &isin},
+		{ID: 2, Name: "Euro", SymbolBefore: false, DecimalPlaces: 2},
 	})
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
@@ -70,8 +70,8 @@ func TestCurrenciesModel_NKeyEntersCreateModeWithDefaults(t *testing.T) {
 	if m.createFocus != focusCurrencyName {
 		t.Fatalf("createFocus = %v, want focusCurrencyName", m.createFocus)
 	}
-	if m.symbolPosition != "before" || m.symbolSpace || m.decimalPlaces != 2 {
-		t.Fatalf("defaults = position=%q space=%v decimals=%d, want before/false/2", m.symbolPosition, m.symbolSpace, m.decimalPlaces)
+	if !m.symbolBefore || m.symbolSpace || m.decimalPlaces != 2 {
+		t.Fatalf("defaults = before=%v space=%v decimals=%d, want true/false/2", m.symbolBefore, m.symbolSpace, m.decimalPlaces)
 	}
 	if !m.Editing() {
 		t.Fatal("Editing() should be true in create mode")
@@ -83,7 +83,7 @@ func TestCurrenciesModel_CreateFocusCycles(t *testing.T) {
 	m, _ = m.Update(keyPress("n"))
 
 	order := []currencyFocus{
-		focusCurrencyName, focusCurrencySymbolPosition, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces,
+		focusCurrencyName, focusCurrencySymbolBefore, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces,
 		focusCurrencyThousandsSep, focusCurrencyDecimalSep, focusCurrencyISIN, focusCurrencyName,
 	}
 	for i, want := range order[1:] {
@@ -109,16 +109,16 @@ func TestCurrenciesModel_CreateFocusCycles(t *testing.T) {
 
 func TestCurrenciesModel_ToggleFields(t *testing.T) {
 	m := newTestCurrenciesModel(t, nil)
-	m, _ = m.Update(keyPress("n")) // position=before, space=false, decimals=2
+	m, _ = m.Update(keyPress("n")) // before=true, space=false, decimals=2
 
 	m, _ = m.Update(keyPress("tab")) // -> Position
 	m, _ = m.Update(keyPress("up"))
-	if m.symbolPosition != "after" {
-		t.Fatalf("symbolPosition after toggle = %q, want after", m.symbolPosition)
+	if m.symbolBefore {
+		t.Fatal("symbolBefore after toggle should be false")
 	}
 	m, _ = m.Update(keyPress("down"))
-	if m.symbolPosition != "before" {
-		t.Fatalf("symbolPosition after second toggle = %q, want before", m.symbolPosition)
+	if !m.symbolBefore {
+		t.Fatal("symbolBefore after second toggle should be true")
 	}
 
 	m, _ = m.Update(keyPress("tab")) // -> Space
@@ -209,7 +209,7 @@ func TestCurrenciesModel_CreateSubmits(t *testing.T) {
 		t.Fatalf("got %#v", msg)
 	}
 
-	if gotBody.Name != "USD" || gotBody.SymbolPosition != "after" || !gotBody.SymbolSpace ||
+	if gotBody.Name != "USD" || gotBody.SymbolBefore || !gotBody.SymbolSpace ||
 		gotBody.DecimalPlaces != 3 || gotBody.ThousandsSeparator != "," || gotBody.DecimalSeparator != "." {
 		t.Fatalf("API received %+v", gotBody)
 	}

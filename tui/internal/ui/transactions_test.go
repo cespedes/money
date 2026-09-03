@@ -264,7 +264,7 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 // backend's own invariant: entries must sum to zero within each
 // currency, not just in total.
 func TestTransactionsModel_CreateRejectsUnbalancedPerCurrency(t *testing.T) {
-	eur := client.Currency{ID: 11, Name: "EUR", SymbolPosition: "after", DecimalSeparator: ",", DecimalPlaces: 2}
+	eur := client.Currency{ID: 11, Name: "EUR", SymbolBefore: false, DecimalSeparator: ",", DecimalPlaces: 2}
 	m := newTestTransactionsModel(t, nil)
 	m.currencies = []client.Currency{testUSD, eur}
 	m.currencyIndex = indexCurrencies(m.currencies)

@@ -17,11 +17,11 @@ A small double-entry accounting application, made of three parts:
   entries only, not including any child accounts' — with no entry at all for
   a currency it's never been posted in.
 - **Currencies** (or, more generally, commodities) are the units entries are
-  posted in. Each has a `name`, formatting configuration (`symbol_position`
-  — `"before"` or `"after"` the amount —, `symbol_space`,
-  `thousands_separator`, `decimal_separator`, and `decimal_places`, which
-  governs both how amounts are stored and how many decimal digits to
-  render), and an optional `isin`.
+  posted in. Each has a `name`, formatting configuration (`symbol_before`
+  — whether the name goes before the amount, defaulting to `false` —,
+  `symbol_space`, `thousands_separator`, `decimal_separator`, and
+  `decimal_places`, which governs both how amounts are stored and how many
+  decimal digits to render), and an optional `isin`.
 - **Transactions** have a `timestamp`, a `description`, and a list of
   **entries**, each an `(account_id, amount, currency_id)` triple. The
   entries of a transaction must always sum to zero *within each currency*
@@ -143,7 +143,7 @@ between them.
 
 ```sh
 curl -s localhost:30730/currencies -d '{
-  "name": "US Dollar", "symbol_position": "before", "symbol_space": false,
+  "name": "US Dollar", "symbol_before": true, "symbol_space": false,
   "thousands_separator": ",", "decimal_separator": ".", "decimal_places": 2
 }'
 curl -s localhost:30730/accounts -d '{"name": "Cash", "code": "1000"}'

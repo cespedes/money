@@ -19,11 +19,11 @@ func NewCurrencyStore(pool *pgxpool.Pool) *CurrencyStore {
 	return &CurrencyStore{pool: pool}
 }
 
-const currencyColumns = `id, name, symbol_position, symbol_space, thousands_separator, decimal_separator, decimal_places, isin`
+const currencyColumns = `id, name, symbol_before, symbol_space, thousands_separator, decimal_separator, decimal_places, isin`
 
 func scanCurrency(row pgx.Row) (models.Currency, error) {
 	var c models.Currency
-	err := row.Scan(&c.ID, &c.Name, &c.SymbolPosition, &c.SymbolSpace,
+	err := row.Scan(&c.ID, &c.Name, &c.SymbolBefore, &c.SymbolSpace,
 		&c.ThousandsSeparator, &c.DecimalSeparator, &c.DecimalPlaces, &c.ISIN)
 	return c, err
 }
@@ -63,9 +63,9 @@ func (s *CurrencyStore) Get(ctx context.Context, id int64) (models.Currency, err
 
 func (s *CurrencyStore) Create(ctx context.Context, c models.Currency) (models.Currency, error) {
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO currencies (name, symbol_position, symbol_space, thousands_separator, decimal_separator, decimal_places, isin)
+		`INSERT INTO currencies (name, symbol_before, symbol_space, thousands_separator, decimal_separator, decimal_places, isin)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		c.Name, c.SymbolPosition, c.SymbolSpace, c.ThousandsSeparator, c.DecimalSeparator, c.DecimalPlaces, c.ISIN,
+		c.Name, c.SymbolBefore, c.SymbolSpace, c.ThousandsSeparator, c.DecimalSeparator, c.DecimalPlaces, c.ISIN,
 	).Scan(&c.ID)
 	if err != nil {
 		return models.Currency{}, fmt.Errorf("insert currency: %w", err)
@@ -76,10 +76,10 @@ func (s *CurrencyStore) Create(ctx context.Context, c models.Currency) (models.C
 func (s *CurrencyStore) Update(ctx context.Context, c models.Currency) (models.Currency, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE currencies
-		 SET name = $1, symbol_position = $2, symbol_space = $3, thousands_separator = $4,
+		 SET name = $1, symbol_before = $2, symbol_space = $3, thousands_separator = $4,
 		     decimal_separator = $5, decimal_places = $6, isin = $7
 		 WHERE id = $8`,
-		c.Name, c.SymbolPosition, c.SymbolSpace, c.ThousandsSeparator, c.DecimalSeparator, c.DecimalPlaces, c.ISIN, c.ID,
+		c.Name, c.SymbolBefore, c.SymbolSpace, c.ThousandsSeparator, c.DecimalSeparator, c.DecimalPlaces, c.ISIN, c.ID,
 	)
 	if err != nil {
 		return models.Currency{}, fmt.Errorf("update currency: %w", err)

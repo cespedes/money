@@ -17,7 +17,7 @@ func TestCurrencyStore_CreateGetListUpdateDelete(t *testing.T) {
 	isin := "US0000000001"
 	created, err := s.Currencies.Create(ctx, models.Currency{
 		Name:               "US Dollar",
-		SymbolPosition:     "before",
+		SymbolBefore:       true,
 		SymbolSpace:        false,
 		ThousandsSeparator: ",",
 		DecimalSeparator:   ".",
@@ -35,14 +35,14 @@ func TestCurrencyStore_CreateGetListUpdateDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Name != "US Dollar" || got.SymbolPosition != "before" || got.SymbolSpace ||
+	if got.Name != "US Dollar" || !got.SymbolBefore || got.SymbolSpace ||
 		got.ThousandsSeparator != "," || got.DecimalSeparator != "." || got.DecimalPlaces != 2 ||
 		got.ISIN == nil || *got.ISIN != isin {
 		t.Fatalf("Get: got %+v", got)
 	}
 
 	second, err := s.Currencies.Create(ctx, models.Currency{
-		Name: "Euro", SymbolPosition: "after", SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2,
+		Name: "Euro", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2,
 	})
 	if err != nil {
 		t.Fatalf("Create second: %v", err)
@@ -84,7 +84,7 @@ func TestCurrencyStore_NotFound(t *testing.T) {
 	if _, err := s.Currencies.Get(ctx, missingID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Get: got %v, want ErrNotFound", err)
 	}
-	if _, err := s.Currencies.Update(ctx, models.Currency{ID: missingID, Name: "X", SymbolPosition: "after"}); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.Currencies.Update(ctx, models.Currency{ID: missingID, Name: "X", SymbolBefore: false}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Update: got %v, want ErrNotFound", err)
 	}
 	if err := s.Currencies.Delete(ctx, missingID); !errors.Is(err, store.ErrNotFound) {
@@ -96,10 +96,10 @@ func TestCurrencyStore_DuplicateNameRejected(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolPosition: "before"}); err != nil {
+	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolBefore: true}); err != nil {
 		t.Fatalf("create first currency: %v", err)
 	}
-	_, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolPosition: "after"})
+	_, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolBefore: false})
 	if !isPgErrorCode(err, "23505") { // unique_violation
 		t.Fatalf("creating a duplicate name: got %v, want unique_violation", err)
 	}
@@ -109,10 +109,10 @@ func TestCurrencyStore_MultipleNilISINsAllowed(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolPosition: "before"}); err != nil {
+	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "USD", SymbolBefore: true}); err != nil {
 		t.Fatalf("create first currency: %v", err)
 	}
-	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "EUR", SymbolPosition: "after"}); err != nil {
+	if _, err := s.Currencies.Create(ctx, models.Currency{Name: "EUR", SymbolBefore: false}); err != nil {
 		t.Fatalf("create second currency with no ISIN: %v", err)
 	}
 }

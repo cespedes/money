@@ -32,8 +32,9 @@ type CurrencyAmount struct {
 type Currency struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
-	// SymbolPosition is "before" or "after" the amount.
-	SymbolPosition string `json:"symbol_position"`
+	// SymbolBefore is whether the name goes before the amount (true) or
+	// after it (false, the default).
+	SymbolBefore bool `json:"symbol_before"`
 	// SymbolSpace is whether to put a space between the name and the
 	// amount.
 	SymbolSpace bool `json:"symbol_space"`

@@ -9,7 +9,7 @@ import (
 func TestCurrency_Format(t *testing.T) {
 	usd := client.Currency{
 		Name:               "USD",
-		SymbolPosition:     "before",
+		SymbolBefore:       true,
 		SymbolSpace:        false,
 		ThousandsSeparator: ",",
 		DecimalSeparator:   ".",
@@ -17,17 +17,17 @@ func TestCurrency_Format(t *testing.T) {
 	}
 	eur := client.Currency{
 		Name:               "EUR",
-		SymbolPosition:     "after",
+		SymbolBefore:       false,
 		SymbolSpace:        true,
 		ThousandsSeparator: ".",
 		DecimalSeparator:   ",",
 		DecimalPlaces:      2,
 	}
 	jpyLike := client.Currency{ // no decimals, no thousands separator
-		Name:           "JPY",
-		SymbolPosition: "before",
-		SymbolSpace:    true,
-		DecimalPlaces:  0,
+		Name:          "JPY",
+		SymbolBefore:  true,
+		SymbolSpace:   true,
+		DecimalPlaces: 0,
 	}
 
 	tests := []struct {

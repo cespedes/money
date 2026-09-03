@@ -21,7 +21,7 @@ func TestCurrenciesCRUD(t *testing.T) {
 	var created models.Currency
 	rec = do(t, h, http.MethodPost, "/currencies", models.Currency{
 		Name:               "US Dollar",
-		SymbolPosition:     "before",
+		SymbolBefore:       true,
 		SymbolSpace:        false,
 		ThousandsSeparator: ",",
 		DecimalSeparator:   ".",
@@ -75,23 +75,10 @@ func TestCurrenciesCRUD(t *testing.T) {
 	}
 }
 
-func TestCreateCurrency_InvalidSymbolPosition(t *testing.T) {
-	h := newTestHandler(t)
-
-	var body map[string]string
-	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{Name: "USD", SymbolPosition: "middle"}, &body)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-	if body["error"] != `symbol_position must be "before" or "after"` {
-		t.Fatalf("body = %v", body)
-	}
-}
-
 func TestCreateCurrency_NegativeDecimalPlaces(t *testing.T) {
 	h := newTestHandler(t)
 
-	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{Name: "USD", SymbolPosition: "before", DecimalPlaces: -1}, nil)
+	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{Name: "USD", SymbolBefore: true, DecimalPlaces: -1}, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -102,7 +89,7 @@ func TestCreateCurrency_DuplicateName(t *testing.T) {
 	createTestCurrency(t, h, "USD")
 
 	var body map[string]string
-	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{Name: "USD", SymbolPosition: "before"}, &body)
+	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{Name: "USD", SymbolBefore: true}, &body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}

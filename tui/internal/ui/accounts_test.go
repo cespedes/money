@@ -85,7 +85,7 @@ func TestRightAlign(t *testing.T) {
 	}
 }
 
-var testUSD = client.Currency{ID: 9, Name: "USD", SymbolPosition: "before", DecimalSeparator: ".", DecimalPlaces: 2}
+var testUSD = client.Currency{ID: 9, Name: "USD", SymbolBefore: true, DecimalSeparator: ".", DecimalPlaces: 2}
 var testCurrencies = currencyByID{testUSD.ID: testUSD}
 
 func TestAccountsToRows(t *testing.T) {
@@ -113,7 +113,7 @@ func TestFormatBalances(t *testing.T) {
 	if got := formatBalances(nil, testCurrencies); got != "" {
 		t.Errorf("formatBalances(nil) = %q, want empty", got)
 	}
-	eur := client.Currency{ID: 7, Name: "EUR", SymbolPosition: "after", SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 	currencies := currencyByID{testUSD.ID: testUSD, eur.ID: eur}
 	got := formatBalances([]client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: 1000}, {CurrencyID: eur.ID, Amount: 500}}, currencies)
 	if want := "USD10.00, 5,00 EUR"; got != want {

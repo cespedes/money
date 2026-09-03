@@ -30,7 +30,7 @@ Both `api` and `postgres` containers publish ports to `127.0.0.1` only (api on 3
 
 ## Architecture
 
-**Monetary amounts** are always integers in the currency's minor unit (e.g. cents), never floats, to avoid rounding errors. Every `transaction_entries` row is `(account_id, amount, currency_id)`; a currency (`currencies` table, `api/internal/models.Currency`) defines both an amount's meaning (`decimal_places`, how many of the integer's low digits are fractional) and how to render it (`symbol_position`, `symbol_space`, `thousands_separator`, `decimal_separator`), plus an optional `isin`.
+**Monetary amounts** are always integers in the currency's minor unit (e.g. cents), never floats, to avoid rounding errors. Every `transaction_entries` row is `(account_id, amount, currency_id)`; a currency (`currencies` table, `api/internal/models.Currency`) defines both an amount's meaning (`decimal_places`, how many of the integer's low digits are fractional) and how to render it (`symbol_before`, `symbol_space`, `thousands_separator`, `decimal_separator`), plus an optional `isin`.
 
 **The double-entry invariant** — a transaction's entries must sum to zero **within each currency** (amounts in different currencies are never summed together; a transaction may freely mix currencies as long as each one balances on its own) — is enforced in two independent places, and both must be kept in sync if this logic ever changes:
 1. `api/internal/store/transactions.go`'s `TransactionStore.Create` sums entries per `currency_id` before writing and returns `store.ErrUnbalanced` (mapped to HTTP 400) if any currency's sum isn't zero.
