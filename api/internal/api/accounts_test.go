@@ -104,42 +104,55 @@ func TestCreateAccount_DuplicateCode(t *testing.T) {
 	}
 }
 
+func balanceFor(balances []models.CurrencyAmount, currencyID int64) (int64, bool) {
+	for _, b := range balances {
+		if b.CurrencyID == currencyID {
+			return b.Amount, true
+		}
+	}
+	return 0, false
+}
+
 func TestAccountBalance(t *testing.T) {
 	h := newTestHandler(t)
+	usd := createTestCurrency(t, h, "USD")
 
 	var cash, revenue models.Account
 	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash"}, &cash)
 	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Revenue"}, &revenue)
-	if cash.Balance != 0 {
-		t.Fatalf("balance of a brand new account = %d, want 0", cash.Balance)
+	if len(cash.Balances) != 0 {
+		t.Fatalf("balances of a brand new account = %+v, want none", cash.Balances)
 	}
 
 	do(t, h, http.MethodPost, "/transactions", models.Transaction{
 		Timestamp:   time.Now(),
 		Description: "Invoice #1",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000},
-			{AccountID: revenue.ID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
 		},
 	}, nil)
 
 	var got models.Account
 	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &got)
-	if got.Balance != 1000 {
-		t.Fatalf("balance via GET /accounts/{id} = %d, want 1000", got.Balance)
+	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 1000 {
+		t.Fatalf("balance via GET /accounts/{id} = (%d, %v), want 1000", bal, ok)
 	}
 
 	var list []models.Account
 	do(t, h, http.MethodGet, "/accounts", nil, &list)
 	for _, a := range list {
-		if a.ID == cash.ID && a.Balance != 1000 {
-			t.Fatalf("balance via GET /accounts = %d, want 1000", a.Balance)
+		if a.ID == cash.ID {
+			if bal, ok := balanceFor(a.Balances, usd.ID); !ok || bal != 1000 {
+				t.Fatalf("balance via GET /accounts = (%d, %v), want 1000", bal, ok)
+			}
 		}
 	}
 }
 
 func TestAccountLedger(t *testing.T) {
 	h := newTestHandler(t)
+	usd := createTestCurrency(t, h, "USD")
 
 	var cash, revenue models.Account
 	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash"}, &cash)
@@ -154,16 +167,16 @@ func TestAccountLedger(t *testing.T) {
 		Timestamp:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
 		Description: "Invoice #1",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000},
-			{AccountID: revenue.ID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
 		},
 	}, nil)
 	do(t, h, http.MethodPost, "/transactions", models.Transaction{
 		Timestamp:   time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC),
 		Description: "Invoice #2",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 500},
-			{AccountID: revenue.ID, Value: -500},
+			{AccountID: cash.ID, Amount: 500, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -500, CurrencyID: usd.ID},
 		},
 	}, nil)
 
@@ -175,10 +188,10 @@ func TestAccountLedger(t *testing.T) {
 	if len(ledger) != 2 {
 		t.Fatalf("got %d entries, want 2: %+v", len(ledger), ledger)
 	}
-	if ledger[0].Description != "Invoice #1" || ledger[0].Value != 1000 || ledger[0].Balance != 1000 {
+	if ledger[0].Description != "Invoice #1" || ledger[0].Amount != 1000 || ledger[0].Balance != 1000 || ledger[0].CurrencyID != usd.ID {
 		t.Errorf("entry 0 = %+v", ledger[0])
 	}
-	if ledger[1].Description != "Invoice #2" || ledger[1].Value != 500 || ledger[1].Balance != 1500 {
+	if ledger[1].Description != "Invoice #2" || ledger[1].Amount != 500 || ledger[1].Balance != 1500 || ledger[1].CurrencyID != usd.ID {
 		t.Errorf("entry 1 = %+v", ledger[1])
 	}
 }

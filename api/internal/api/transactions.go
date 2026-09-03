@@ -59,12 +59,12 @@ func (h *Handler) createTransaction(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.store.Transactions.Create(r.Context(), t)
 	if errors.Is(err, store.ErrUnbalanced) {
-		writeError(w, http.StatusBadRequest, "entry values must sum to zero")
+		writeError(w, http.StatusBadRequest, "entry amounts must sum to zero within each currency")
 		return
 	}
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			writeError(w, http.StatusBadRequest, "one or more entries reference an account that does not exist")
+			writeError(w, http.StatusBadRequest, "one or more entries reference an account or currency that does not exist")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

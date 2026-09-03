@@ -27,11 +27,21 @@ func pgConstraintMessage(err error) string {
 	if !errors.As(err, &pgErr) {
 		return ""
 	}
+	switch pgErr.ConstraintName {
+	case "accounts_code_unique":
+		return "account code already in use"
+	case "accounts_parent_id_fkey":
+		return "referenced parent account does not exist"
+	case "currencies_name_unique":
+		return "currency name already in use"
+	case "currencies_isin_unique":
+		return "ISIN already in use"
+	}
 	switch pgErr.Code {
 	case "23503": // foreign_key_violation
-		return "referenced account does not exist"
+		return "referenced record does not exist"
 	case "23505": // unique_violation
-		return "account code already in use"
+		return "value already in use"
 	default:
 		return ""
 	}

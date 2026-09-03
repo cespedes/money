@@ -29,6 +29,12 @@ func NewRouter(s *store.Store) http.Handler {
 	mux.HandleFunc("GET /transactions/{id}", h.getTransaction)
 	mux.HandleFunc("DELETE /transactions/{id}", h.deleteTransaction)
 
+	mux.HandleFunc("GET /currencies", h.listCurrencies)
+	mux.HandleFunc("POST /currencies", h.createCurrency)
+	mux.HandleFunc("GET /currencies/{id}", h.getCurrency)
+	mux.HandleFunc("PUT /currencies/{id}", h.updateCurrency)
+	mux.HandleFunc("DELETE /currencies/{id}", h.deleteCurrency)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

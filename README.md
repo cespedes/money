@@ -12,18 +12,28 @@ A small double-entry accounting application, made of three parts:
 
 - **Accounts** have a `name`, an optional `code`, and an optional `parent_id`
   pointing to another account, so accounts can be organized into a hierarchy
-  (a chart of accounts). The API also reports each account's `balance`: the
-  sum of that account's own transaction entries, not including any child
-  accounts'.
+  (a chart of accounts). The API also reports each account's `balances`: one
+  `(currency_id, amount)` pair per currency it has entries in — its own
+  entries only, not including any child accounts' — with no entry at all for
+  a currency it's never been posted in.
+- **Currencies** (or, more generally, commodities) are the units entries are
+  posted in. Each has a `name`, formatting configuration (`symbol_position`
+  — `"before"` or `"after"` the amount —, `symbol_space`,
+  `thousands_separator`, `decimal_separator`, and `decimal_places`, which
+  governs both how amounts are stored and how many decimal digits to
+  render), and an optional `isin`.
 - **Transactions** have a `timestamp`, a `description`, and a list of
-  **entries**, each an `(account_id, value)` pair. The values of a
-  transaction's entries must always sum to zero (double-entry bookkeeping):
-  a positive value is a debit, a negative value is a credit.
+  **entries**, each an `(account_id, amount, currency_id)` triple. The
+  entries of a transaction must always sum to zero *within each currency*
+  (double-entry bookkeeping) — amounts in different currencies are never
+  summed together, so a single transaction can freely mix currencies as
+  long as each one balances on its own. A positive amount is a debit, a
+  negative amount is a credit.
 
-Monetary values are stored and transmitted as integers in the minor
-currency unit (e.g. cents) rather than floating point numbers, to avoid
-rounding errors. `1050` means `10.50` in whatever currency the deployment
-uses.
+Monetary amounts are stored and transmitted as integers in the minor unit
+of their currency (e.g. cents, per that currency's `decimal_places`)
+rather than floating point numbers, to avoid rounding errors. An amount of
+`1050` in a currency with 2 decimal places means `10.50` of it.
 
 The zero-sum invariant is enforced twice: the API rejects unbalanced
 transactions before writing anything, and the database itself has a
@@ -83,6 +93,13 @@ To apply the schema against a database you're managing yourself instead of
 psql "$DATABASE_URL" -f db/schema.sql
 ```
 
+There's no migration system: `db/schema.sql` is the whole schema, applied
+once to an empty database (automatically by `make up`/`make db-up` on
+their first run, since it's mounted as a Postgres init script). A schema
+change means starting from a fresh database — `make db-reset` (or
+`docker compose down -v` for the full stack) — not upgrading an existing
+one in place.
+
 ### Running the tests
 
 The API's tests exercise the store and HTTP layers against a real
@@ -111,14 +128,24 @@ All endpoints accept and return JSON.
 | DELETE | `/accounts/{id}`    | Delete an account                         |
 | GET    | `/accounts/{id}/transactions` | List an account's ledger (see below) |
 | GET    | `/transactions`     | List transactions (with their entries)    |
-| POST   | `/transactions`     | Create a transaction (entries must sum to zero) |
+| POST   | `/transactions`     | Create a transaction (entries must sum to zero per currency) |
 | GET    | `/transactions/{id}`| Get a transaction (with its entries)      |
 | DELETE | `/transactions/{id}`| Delete a transaction                      |
+| GET    | `/currencies`       | List currencies                           |
+| POST   | `/currencies`       | Create a currency                         |
+| GET    | `/currencies/{id}`  | Get a currency                            |
+| PUT    | `/currencies/{id}`  | Update a currency                         |
+| DELETE | `/currencies/{id}`  | Delete a currency                         |
 | GET    | `/healthz`          | Health check                              |
 
-Example: create two accounts, then a balanced transaction between them.
+Example: create a currency and two accounts, then a balanced transaction
+between them.
 
 ```sh
+curl -s localhost:30730/currencies -d '{
+  "name": "US Dollar", "symbol_position": "before", "symbol_space": false,
+  "thousands_separator": ",", "decimal_separator": ".", "decimal_places": 2
+}'
 curl -s localhost:30730/accounts -d '{"name": "Cash", "code": "1000"}'
 curl -s localhost:30730/accounts -d '{"name": "Revenue", "code": "4000"}'
 
@@ -126,18 +153,32 @@ curl -s localhost:30730/transactions -d '{
   "timestamp": "2026-08-31T10:00:00Z",
   "description": "Invoice #1",
   "entries": [
-    {"account_id": 1, "value": 1000},
-    {"account_id": 2, "value": -1000}
+    {"account_id": 1, "amount": 1000, "currency_id": 1},
+    {"account_id": 2, "amount": -1000, "currency_id": 1}
   ]
 }'
 ```
 
+A single transaction may post in more than one currency, as long as each
+currency's own entries sum to zero.
+
 `GET /accounts/{id}/transactions` returns that account's ledger: every
 transaction with an entry on it, in timestamp order, with that account's
-own value in the transaction and its running balance through that point —
-e.g. `[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "value": 1000, "balance": 1000}]`.
+own amount (and currency) in the transaction and its running balance *in
+that same currency* through that point — e.g.
+`[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "currency_id": 1, "amount": 1000, "balance": 1000}]`.
+A transaction posting to the account in more than one currency contributes
+one row per currency.
 
 ## TUI
+
+> **Currently out of sync with the API:** the TUI still creates and
+> displays transaction entries with the old `(account_id, value)` shape,
+> not the API's current `(account_id, amount, currency_id)`. Creating a
+> transaction from the TUI will fail (it posts no `currency_id`, so the
+> API rejects it as referencing a currency that doesn't exist), and
+> balances/ledgers won't render correctly until the TUI is updated for
+> currencies.
 
 `Tab` switches between the Accounts and Transactions views. Within a view:
 `↑`/`↓` navigate, `n` creates a new record, `d` deletes the selected one,
@@ -145,9 +186,12 @@ e.g. `[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "v
 view) or an account's ledger (in the Accounts view). `Esc` cancels a form
 or backs out of a ledger/detail view, `q` quits.
 
-When creating an account, the TUI first asks you to pick a parent from a
-list of the existing accounts (or "(none)", the default), then a name
-(required), then a code (optional).
+Creating an account opens a pop-up over the accounts list, laid out as a
+small table — Parent, Name, and Code as fixed-width columns with their
+names above. `Tab`/`Shift+Tab` or `←`/`→` move between them. While Parent
+has focus, a dropdown lists "(none)" and every existing account — all of
+them at once, or as many as fit in the window — and `↑`/`↓` pick one.
+Name is required, code is optional.
 
 When creating a transaction, the TUI walks through description, timestamp,
 and then repeatedly asks for `(account_id, value)` entries until you

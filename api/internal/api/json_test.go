@@ -47,8 +47,12 @@ func TestPgConstraintMessage(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"foreign key violation", &pgconn.PgError{Code: "23503"}, "referenced account does not exist"},
-		{"unique violation", &pgconn.PgError{Code: "23505"}, "account code already in use"},
+		{"known unique constraint", &pgconn.PgError{Code: "23505", ConstraintName: "accounts_code_unique"}, "account code already in use"},
+		{"known unique constraint, currency name", &pgconn.PgError{Code: "23505", ConstraintName: "currencies_name_unique"}, "currency name already in use"},
+		{"known unique constraint, currency ISIN", &pgconn.PgError{Code: "23505", ConstraintName: "currencies_isin_unique"}, "ISIN already in use"},
+		{"known fkey constraint", &pgconn.PgError{Code: "23503", ConstraintName: "accounts_parent_id_fkey"}, "referenced parent account does not exist"},
+		{"unrecognized foreign key violation", &pgconn.PgError{Code: "23503", ConstraintName: "something_else_fkey"}, "referenced record does not exist"},
+		{"unrecognized unique violation", &pgconn.PgError{Code: "23505", ConstraintName: "something_else_unique"}, "value already in use"},
 		{"unrelated pg error", &pgconn.PgError{Code: "42601"}, ""},
 		{"non-pg error", errors.New("boom"), ""},
 	}

@@ -1,9 +1,12 @@
 -- Accounting application schema.
 --
--- Monetary values are stored as BIGINT in minor currency units (e.g. cents)
--- to avoid floating point rounding errors. A positive value is a debit,
--- a negative value is a credit; the entries of a transaction must always
--- sum to zero (double-entry bookkeeping).
+-- Monetary amounts are stored as BIGINT in the minor unit of whatever
+-- currency they're posted in (e.g. cents for a currency with 2 decimal
+-- places) to avoid floating point rounding errors. A positive amount is
+-- a debit, a negative amount is a credit; the entries of a transaction
+-- must always sum to zero within each currency (double-entry
+-- bookkeeping) — amounts in different currencies are never summed
+-- together directly.
 
 CREATE TABLE accounts (
     id        BIGSERIAL PRIMARY KEY,
@@ -15,6 +18,24 @@ CREATE TABLE accounts (
 
 CREATE INDEX idx_accounts_parent_id ON accounts (parent_id);
 
+-- A currency (or, more generally, a commodity): a unit that transaction
+-- entries can be posted in, along with how amounts in it should be
+-- formatted for display. decimal_places governs both how amounts are
+-- stored (as an integer number of the currency's minor unit, e.g. cents)
+-- and how many decimal digits to render.
+CREATE TABLE currencies (
+    id                  BIGSERIAL PRIMARY KEY,
+    name                TEXT NOT NULL,
+    symbol_position     TEXT NOT NULL DEFAULT 'after' CHECK (symbol_position IN ('before', 'after')),
+    symbol_space        BOOLEAN NOT NULL DEFAULT TRUE,
+    thousands_separator TEXT NOT NULL DEFAULT '',
+    decimal_separator   TEXT NOT NULL DEFAULT '.',
+    decimal_places      SMALLINT NOT NULL DEFAULT 2 CHECK (decimal_places >= 0),
+    isin                TEXT,
+    CONSTRAINT currencies_name_unique UNIQUE (name),
+    CONSTRAINT currencies_isin_unique UNIQUE (isin)
+);
+
 CREATE TABLE transactions (
     id          BIGSERIAL PRIMARY KEY,
     "timestamp" TIMESTAMPTZ NOT NULL,
@@ -25,20 +46,23 @@ CREATE TABLE transaction_entries (
     id             BIGSERIAL PRIMARY KEY,
     transaction_id BIGINT NOT NULL REFERENCES transactions (id) ON DELETE CASCADE,
     account_id     BIGINT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
-    value          BIGINT NOT NULL
+    amount         BIGINT NOT NULL,
+    currency_id    BIGINT NOT NULL REFERENCES currencies (id) ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_transaction_entries_transaction_id ON transaction_entries (transaction_id);
 CREATE INDEX idx_transaction_entries_account_id ON transaction_entries (account_id);
+CREATE INDEX idx_transaction_entries_currency_id ON transaction_entries (currency_id);
 
--- Defense in depth: the API validates that entries sum to zero before
--- writing, but this deferred constraint trigger enforces the same
--- invariant at the database level for any transaction_entries change,
--- regardless of what wrote it.
+-- Defense in depth: the API validates that entries sum to zero (per
+-- currency) before writing, but this deferred constraint trigger enforces
+-- the same invariant at the database level for any transaction_entries
+-- change, regardless of what wrote it.
 CREATE OR REPLACE FUNCTION check_transaction_balance() RETURNS trigger AS $$
 DECLARE
     affected_transaction_id BIGINT;
-    balance                 BIGINT;
+    unbalanced_currency_id  BIGINT;
+    unbalanced_amount       BIGINT;
 BEGIN
     IF TG_OP = 'DELETE' THEN
         affected_transaction_id := OLD.transaction_id;
@@ -46,14 +70,17 @@ BEGIN
         affected_transaction_id := NEW.transaction_id;
     END IF;
 
-    SELECT COALESCE(SUM(value), 0)
-    INTO balance
+    SELECT currency_id, SUM(amount)
+    INTO unbalanced_currency_id, unbalanced_amount
     FROM transaction_entries
-    WHERE transaction_id = affected_transaction_id;
+    WHERE transaction_id = affected_transaction_id
+    GROUP BY currency_id
+    HAVING SUM(amount) <> 0
+    LIMIT 1;
 
-    IF balance <> 0 THEN
-        RAISE EXCEPTION 'transaction % entries do not sum to zero (got %)',
-            affected_transaction_id, balance;
+    IF unbalanced_currency_id IS NOT NULL THEN
+        RAISE EXCEPTION 'transaction % entries in currency % do not sum to zero (got %)',
+            affected_transaction_id, unbalanced_currency_id, unbalanced_amount;
     END IF;
 
     RETURN NULL;

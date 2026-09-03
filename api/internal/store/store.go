@@ -18,11 +18,13 @@ var ErrUnbalanced = errors.New("transaction entries do not sum to zero")
 type Store struct {
 	Accounts     *AccountStore
 	Transactions *TransactionStore
+	Currencies   *CurrencyStore
 }
 
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{
 		Accounts:     NewAccountStore(pool),
 		Transactions: NewTransactionStore(pool),
+		Currencies:   NewCurrencyStore(pool),
 	}
 }

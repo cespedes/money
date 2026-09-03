@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"money/api/internal/api"
+	"money/api/internal/models"
 	"money/api/internal/store"
 	"money/api/internal/testutil"
 )
@@ -58,6 +59,23 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// createTestCurrency creates a currency via the HTTP API, for tests that
+// need a valid currency_id to post transaction entries against.
+func createTestCurrency(t *testing.T, h http.Handler, name string) models.Currency {
+	t.Helper()
+	var c models.Currency
+	rec := do(t, h, http.MethodPost, "/currencies", models.Currency{
+		Name:             name,
+		SymbolPosition:   "before",
+		DecimalSeparator: ".",
+		DecimalPlaces:    2,
+	}, &c)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create currency %q: status = %d", name, rec.Code)
+	}
+	return c
 }
 
 func TestHealthz(t *testing.T) {

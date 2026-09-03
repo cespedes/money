@@ -26,18 +26,45 @@ func createTwoAccounts(t *testing.T, s *store.Store) (cash, revenue models.Accou
 	return cash, revenue
 }
 
+func createTestCurrency(t *testing.T, s *store.Store, name string) models.Currency {
+	t.Helper()
+	c, err := s.Currencies.Create(context.Background(), models.Currency{
+		Name:             name,
+		SymbolPosition:   "before",
+		SymbolSpace:      false,
+		DecimalSeparator: ".",
+		DecimalPlaces:    2,
+	})
+	if err != nil {
+		t.Fatalf("create currency %q: %v", name, err)
+	}
+	return c
+}
+
+// balanceFor looks up an account's balance in a specific currency from
+// its Balances slice, or (0, false) if it has no entries in it.
+func balanceFor(balances []models.CurrencyAmount, currencyID int64) (int64, bool) {
+	for _, b := range balances {
+		if b.CurrencyID == currencyID {
+			return b.Amount, true
+		}
+	}
+	return 0, false
+}
+
 func TestAccountStore_Balance(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
-	// No entries yet: balance is 0, not NULL.
+	// No entries yet: no balance for this currency at all.
 	got, err := s.Accounts.Get(ctx, cash.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Balance != 0 {
-		t.Fatalf("balance with no entries = %d, want 0", got.Balance)
+	if len(got.Balances) != 0 {
+		t.Fatalf("balances with no entries = %+v, want none", got.Balances)
 	}
 
 	child, err := s.Accounts.Create(ctx, models.Account{Name: "Petty Cash", ParentID: &cash.ID})
@@ -47,13 +74,13 @@ func TestAccountStore_Balance(t *testing.T) {
 
 	for _, txn := range []models.Transaction{
 		{Timestamp: time.Now(), Description: "Invoice #1", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000}, {AccountID: revenue.ID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
 		}},
 		{Timestamp: time.Now(), Description: "Invoice #2", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 500}, {AccountID: revenue.ID, Value: -500},
+			{AccountID: cash.ID, Amount: 500, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -500, CurrencyID: usd.ID},
 		}},
 		{Timestamp: time.Now(), Description: "Move to petty cash", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: -200}, {AccountID: child.ID, Value: 200},
+			{AccountID: cash.ID, Amount: -200, CurrencyID: usd.ID}, {AccountID: child.ID, Amount: 200, CurrencyID: usd.ID},
 		}},
 	} {
 		if _, err := s.Transactions.Create(ctx, txn); err != nil {
@@ -65,8 +92,8 @@ func TestAccountStore_Balance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Balance != 1300 { // 1000 + 500 - 200
-		t.Fatalf("cash balance = %d, want 1300", got.Balance)
+	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 1300 { // 1000 + 500 - 200
+		t.Fatalf("cash USD balance = (%d, %v), want 1300", bal, ok)
 	}
 
 	// A parent's balance is only its own entries, not its children's.
@@ -74,18 +101,53 @@ func TestAccountStore_Balance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	balances := make(map[int64]int64, len(list))
+	balances := make(map[int64][]models.CurrencyAmount, len(list))
 	for _, a := range list {
-		balances[a.ID] = a.Balance
+		balances[a.ID] = a.Balances
 	}
-	if balances[cash.ID] != 1300 {
-		t.Fatalf("List: cash balance = %d, want 1300", balances[cash.ID])
+	if bal, ok := balanceFor(balances[cash.ID], usd.ID); !ok || bal != 1300 {
+		t.Fatalf("List: cash balance = (%d, %v), want 1300", bal, ok)
 	}
-	if balances[child.ID] != 200 {
-		t.Fatalf("List: petty cash balance = %d, want 200 (not rolled up into cash)", balances[child.ID])
+	if bal, ok := balanceFor(balances[child.ID], usd.ID); !ok || bal != 200 {
+		t.Fatalf("List: petty cash balance = (%d, %v), want 200 (not rolled up into cash)", bal, ok)
 	}
-	if balances[revenue.ID] != -1500 {
-		t.Fatalf("List: revenue balance = %d, want -1500", balances[revenue.ID])
+	if bal, ok := balanceFor(balances[revenue.ID], usd.ID); !ok || bal != -1500 {
+		t.Fatalf("List: revenue balance = (%d, %v), want -1500", bal, ok)
+	}
+}
+
+func TestAccountStore_BalancePerCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	for _, txn := range []models.Transaction{
+		{Timestamp: time.Now(), Description: "USD invoice", Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		}},
+		{Timestamp: time.Now(), Description: "EUR invoice", Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 300, CurrencyID: eur.ID}, {AccountID: revenue.ID, Amount: -300, CurrencyID: eur.ID},
+		}},
+	} {
+		if _, err := s.Transactions.Create(ctx, txn); err != nil {
+			t.Fatalf("create %q: %v", txn.Description, err)
+		}
+	}
+
+	got, err := s.Accounts.Get(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Balances) != 2 {
+		t.Fatalf("balances = %+v, want one entry per currency", got.Balances)
+	}
+	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 1000 {
+		t.Fatalf("USD balance = (%d, %v), want 1000", bal, ok)
+	}
+	if bal, ok := balanceFor(got.Balances, eur.ID); !ok || bal != 300 {
+		t.Fatalf("EUR balance = (%d, %v), want 300 (not mixed with USD)", bal, ok)
 	}
 }
 
@@ -93,6 +155,7 @@ func TestAccountStore_Ledger(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
 	if _, err := s.Accounts.Ledger(ctx, 999999); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Ledger of a missing account: got %v, want ErrNotFound", err)
@@ -114,13 +177,13 @@ func TestAccountStore_Ledger(t *testing.T) {
 	// sorted by timestamp rather than creation/insert order.
 	for _, txn := range []models.Transaction{
 		{Timestamp: t2, Description: "Second", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 500}, {AccountID: revenue.ID, Value: -500},
+			{AccountID: cash.ID, Amount: 500, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -500, CurrencyID: usd.ID},
 		}},
 		{Timestamp: t1, Description: "First", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000}, {AccountID: revenue.ID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
 		}},
 		{Timestamp: t3, Description: "Third", Entries: []models.Entry{
-			{AccountID: cash.ID, Value: -300}, {AccountID: revenue.ID, Value: 300},
+			{AccountID: cash.ID, Amount: -300, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: 300, CurrencyID: usd.ID},
 		}},
 	} {
 		if _, err := s.Transactions.Create(ctx, txn); err != nil {
@@ -137,13 +200,65 @@ func TestAccountStore_Ledger(t *testing.T) {
 	}
 
 	wantDesc := []string{"First", "Second", "Third"}
-	wantValue := []int64{1000, 500, -300}
+	wantAmount := []int64{1000, 500, -300}
 	wantBalance := []int64{1000, 1500, 1200}
 	for i, e := range entries {
-		if e.Description != wantDesc[i] || e.Value != wantValue[i] || e.Balance != wantBalance[i] {
-			t.Errorf("entry %d = %+v, want description=%s value=%d balance=%d",
-				i, e, wantDesc[i], wantValue[i], wantBalance[i])
+		if e.Description != wantDesc[i] || e.Amount != wantAmount[i] || e.Balance != wantBalance[i] || e.CurrencyID != usd.ID {
+			t.Errorf("entry %d = %+v, want description=%s amount=%d balance=%d currency=%d",
+				i, e, wantDesc[i], wantAmount[i], wantBalance[i], usd.ID)
 		}
+	}
+}
+
+func TestAccountStore_LedgerPerCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	for _, txn := range []models.Transaction{
+		{Timestamp: time.Now(), Description: "USD 1", Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		}},
+		{Timestamp: time.Now(), Description: "EUR 1", Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 300, CurrencyID: eur.ID}, {AccountID: revenue.ID, Amount: -300, CurrencyID: eur.ID},
+		}},
+		{Timestamp: time.Now(), Description: "USD 2", Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 500, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -500, CurrencyID: usd.ID},
+		}},
+	} {
+		if _, err := s.Transactions.Create(ctx, txn); err != nil {
+			t.Fatalf("create %q: %v", txn.Description, err)
+		}
+	}
+
+	entries, err := s.Accounts.Ledger(ctx, cash.ID)
+	if err != nil {
+		t.Fatalf("Ledger: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries, want 3: %+v", len(entries), entries)
+	}
+
+	var usdBalances, eurBalances []int64
+	for _, e := range entries {
+		switch e.CurrencyID {
+		case usd.ID:
+			usdBalances = append(usdBalances, e.Balance)
+		case eur.ID:
+			eurBalances = append(eurBalances, e.Balance)
+		default:
+			t.Errorf("unexpected currency %d in entry %+v", e.CurrencyID, e)
+		}
+	}
+	// The USD running balance must not be perturbed by the EUR entry in
+	// between: 1000, then 1500 (not 1000+300=1300).
+	if want := []int64{1000, 1500}; len(usdBalances) != 2 || usdBalances[0] != want[0] || usdBalances[1] != want[1] {
+		t.Errorf("USD running balances = %v, want %v", usdBalances, want)
+	}
+	if want := []int64{300}; len(eurBalances) != 1 || eurBalances[0] != want[0] {
+		t.Errorf("EUR running balances = %v, want %v", eurBalances, want)
 	}
 }
 
@@ -151,14 +266,15 @@ func TestTransactionStore_CreateGetListDelete(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
 	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	created, err := s.Transactions.Create(ctx, models.Transaction{
 		Timestamp:   ts,
 		Description: "Invoice #1",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000},
-			{AccountID: revenue.ID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
 		},
 	})
 	if err != nil {
@@ -180,6 +296,9 @@ func TestTransactionStore_CreateGetListDelete(t *testing.T) {
 	}
 	if len(got.Entries) != 2 {
 		t.Fatalf("Get: got %d entries, want 2", len(got.Entries))
+	}
+	if got.Entries[0].CurrencyID != usd.ID {
+		t.Fatalf("Get: entry currency = %d, want %d", got.Entries[0].CurrencyID, usd.ID)
 	}
 
 	list, err := s.Transactions.List(ctx)
@@ -205,13 +324,14 @@ func TestTransactionStore_CreateRejectsUnbalanced(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
 	_, err := s.Transactions.Create(ctx, models.Transaction{
 		Timestamp:   time.Now(),
 		Description: "Unbalanced",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000},
-			{AccountID: revenue.ID, Value: -900},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -900, CurrencyID: usd.ID},
 		},
 	})
 	if !errors.Is(err, store.ErrUnbalanced) {
@@ -227,22 +347,97 @@ func TestTransactionStore_CreateRejectsUnbalanced(t *testing.T) {
 	}
 }
 
+// TestTransactionStore_CreateRejectsUnbalancedInOneCurrency proves the
+// balance check is per currency, not a single sum across all of a
+// transaction's entries: even though the four entries below sum to zero
+// overall (1000 - 900 - 100 + 0... ), each currency must independently
+// balance, and here USD is short by 100.
+func TestTransactionStore_CreateRejectsUnbalancedInOneCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	_, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Mixed currencies, USD unbalanced",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -900, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 100, CurrencyID: eur.ID},
+			{AccountID: revenue.ID, Amount: -100, CurrencyID: eur.ID},
+		},
+	})
+	if !errors.Is(err, store.ErrUnbalanced) {
+		t.Fatalf("Create: got %v, want ErrUnbalanced (USD leg is short by 100)", err)
+	}
+}
+
+// TestTransactionStore_CreateAllowsBalancedMultiCurrency is the positive
+// counterpart: a transaction with two independently-balanced currencies
+// in the same transaction is accepted.
+func TestTransactionStore_CreateAllowsBalancedMultiCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	created, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Mixed currencies, both balanced",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 100, CurrencyID: eur.ID},
+			{AccountID: revenue.ID, Amount: -100, CurrencyID: eur.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(created.Entries) != 4 {
+		t.Fatalf("Create: got %d entries, want 4", len(created.Entries))
+	}
+}
+
 func TestTransactionStore_CreateRejectsUnknownAccount(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
 	const missingAccountID = 999999
 	_, err := s.Transactions.Create(ctx, models.Transaction{
 		Timestamp:   time.Now(),
 		Description: "Bad reference",
 		Entries: []models.Entry{
-			{AccountID: cash.ID, Value: 1000},
-			{AccountID: missingAccountID, Value: -1000},
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: missingAccountID, Amount: -1000, CurrencyID: usd.ID},
 		},
 	})
 	if !isPgErrorCode(err, "23503") { // foreign_key_violation
 		t.Fatalf("Create with unknown account: got %v, want foreign_key_violation", err)
+	}
+}
+
+func TestTransactionStore_CreateRejectsUnknownCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+
+	const missingCurrencyID = 999999
+	_, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Bad currency reference",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: missingCurrencyID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: missingCurrencyID},
+		},
+	})
+	if !isPgErrorCode(err, "23503") { // foreign_key_violation
+		t.Fatalf("Create with unknown currency: got %v, want foreign_key_violation", err)
 	}
 }
 
@@ -256,6 +451,7 @@ func TestDatabaseTriggerRejectsUnbalancedEntries(t *testing.T) {
 	pool := testutil.NewPool(t)
 	s := store.New(pool)
 	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -272,8 +468,8 @@ func TestDatabaseTriggerRejectsUnbalancedEntries(t *testing.T) {
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO transaction_entries (transaction_id, account_id, value) VALUES ($1, $2, 1000), ($1, $3, -900)`,
-		transactionID, cash.ID, revenue.ID)
+		`INSERT INTO transaction_entries (transaction_id, account_id, amount, currency_id) VALUES ($1, $2, 1000, $4), ($1, $3, -900, $4)`,
+		transactionID, cash.ID, revenue.ID, usd.ID)
 	if err != nil {
 		t.Fatalf("insert entries: %v", err)
 	}

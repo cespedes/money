@@ -19,16 +19,8 @@ func NewAccountStore(pool *pgxpool.Pool) *AccountStore {
 	return &AccountStore{pool: pool}
 }
 
-// accountWithBalanceQuery computes each account's balance as the sum of
-// its own transaction entries (not any child accounts'), via a LEFT JOIN
-// so that accounts with no entries yet still come back with balance 0.
-const accountWithBalanceQuery = `
-	SELECT a.id, a.name, a.code, a.parent_id, COALESCE(SUM(te.value), 0)
-	FROM accounts a
-	LEFT JOIN transaction_entries te ON te.account_id = a.id`
-
 func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
-	rows, err := s.pool.Query(ctx, accountWithBalanceQuery+` GROUP BY a.id ORDER BY a.id`)
+	rows, err := s.pool.Query(ctx, `SELECT id, name, code, parent_id FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts: %w", err)
 	}
@@ -37,7 +29,7 @@ func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
 	var accounts []models.Account
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.Code, &a.ParentID, &a.Balance); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Code, &a.ParentID); err != nil {
 			return nil, fmt.Errorf("scan account: %w", err)
 		}
 		accounts = append(accounts, a)
@@ -45,28 +37,82 @@ func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate accounts: %w", err)
 	}
+
+	if err := s.attachBalances(ctx, accounts); err != nil {
+		return nil, err
+	}
 	return accounts, nil
 }
 
 func (s *AccountStore) Get(ctx context.Context, id int64) (models.Account, error) {
 	var a models.Account
 	err := s.pool.QueryRow(ctx,
-		accountWithBalanceQuery+` WHERE a.id = $1 GROUP BY a.id`, id,
-	).Scan(&a.ID, &a.Name, &a.Code, &a.ParentID, &a.Balance)
+		`SELECT id, name, code, parent_id FROM accounts WHERE id = $1`, id,
+	).Scan(&a.ID, &a.Name, &a.Code, &a.ParentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return models.Account{}, ErrNotFound
 	}
 	if err != nil {
 		return models.Account{}, fmt.Errorf("query account: %w", err)
 	}
-	return a, nil
+
+	accounts := []models.Account{a}
+	if err := s.attachBalances(ctx, accounts); err != nil {
+		return models.Account{}, err
+	}
+	return accounts[0], nil
+}
+
+// attachBalances fills in each account's Balances: its own transaction
+// entries (not any child accounts'), summed per currency. An account with
+// no entries in a given currency has no entry for it, rather than a zero
+// one — so accounts with no entries at all get a nil slice.
+func (s *AccountStore) attachBalances(ctx context.Context, accounts []models.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(accounts))
+	for i, a := range accounts {
+		ids[i] = a.ID
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT account_id, currency_id, SUM(amount)
+		 FROM transaction_entries
+		 WHERE account_id = ANY($1)
+		 GROUP BY account_id, currency_id
+		 ORDER BY account_id, currency_id`, ids)
+	if err != nil {
+		return fmt.Errorf("query balances: %w", err)
+	}
+	defer rows.Close()
+
+	balances := make(map[int64][]models.CurrencyAmount)
+	for rows.Next() {
+		var accountID int64
+		var ca models.CurrencyAmount
+		if err := rows.Scan(&accountID, &ca.CurrencyID, &ca.Amount); err != nil {
+			return fmt.Errorf("scan balance: %w", err)
+		}
+		balances[accountID] = append(balances[accountID], ca)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate balances: %w", err)
+	}
+
+	for i := range accounts {
+		accounts[i].Balances = balances[accounts[i].ID]
+	}
+	return nil
 }
 
 // Ledger returns every transaction that has an entry on this account, in
-// timestamp order, along with this account's own value in that
-// transaction (its entries summed, in the unlikely case there's more
-// than one) and its running balance through that point. It returns
-// ErrNotFound if the account doesn't exist.
+// timestamp order, along with this account's own amount in that
+// transaction and currency (its entries summed, in the unlikely case
+// there's more than one), and its running balance in that same currency
+// through that point. A transaction posting to this account in more than
+// one currency contributes one row per currency. It returns ErrNotFound
+// if the account doesn't exist.
 func (s *AccountStore) Ledger(ctx context.Context, accountID int64) ([]models.LedgerEntry, error) {
 	var exists bool
 	if err := s.pool.QueryRow(ctx,
@@ -79,12 +125,12 @@ func (s *AccountStore) Ledger(ctx context.Context, accountID int64) ([]models.Le
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT t.id, t."timestamp", t.description, SUM(te.value),
-			SUM(SUM(te.value)) OVER (ORDER BY t."timestamp", t.id)
+		SELECT t.id, t."timestamp", t.description, te.currency_id, SUM(te.amount),
+			SUM(SUM(te.amount)) OVER (PARTITION BY te.currency_id ORDER BY t."timestamp", t.id)
 		FROM transaction_entries te
 		JOIN transactions t ON t.id = te.transaction_id
 		WHERE te.account_id = $1
-		GROUP BY t.id, t."timestamp", t.description
+		GROUP BY t.id, t."timestamp", t.description, te.currency_id
 		ORDER BY t."timestamp", t.id`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("query ledger: %w", err)
@@ -94,7 +140,7 @@ func (s *AccountStore) Ledger(ctx context.Context, accountID int64) ([]models.Le
 	var entries []models.LedgerEntry
 	for rows.Next() {
 		var e models.LedgerEntry
-		if err := rows.Scan(&e.TransactionID, &e.Timestamp, &e.Description, &e.Value, &e.Balance); err != nil {
+		if err := rows.Scan(&e.TransactionID, &e.Timestamp, &e.Description, &e.CurrencyID, &e.Amount, &e.Balance); err != nil {
 			return nil, fmt.Errorf("scan ledger entry: %w", err)
 		}
 		entries = append(entries, e)

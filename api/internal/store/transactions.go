@@ -76,7 +76,7 @@ type querier interface {
 
 func (s *TransactionStore) entriesFor(ctx context.Context, q querier, transactionID int64) ([]models.Entry, error) {
 	rows, err := q.Query(ctx,
-		`SELECT account_id, value FROM transaction_entries WHERE transaction_id = $1 ORDER BY id`,
+		`SELECT account_id, amount, currency_id FROM transaction_entries WHERE transaction_id = $1 ORDER BY id`,
 		transactionID)
 	if err != nil {
 		return nil, fmt.Errorf("query entries: %w", err)
@@ -86,7 +86,7 @@ func (s *TransactionStore) entriesFor(ctx context.Context, q querier, transactio
 	var entries []models.Entry
 	for rows.Next() {
 		var e models.Entry
-		if err := rows.Scan(&e.AccountID, &e.Value); err != nil {
+		if err := rows.Scan(&e.AccountID, &e.Amount, &e.CurrencyID); err != nil {
 			return nil, fmt.Errorf("scan entry: %w", err)
 		}
 		entries = append(entries, e)
@@ -98,16 +98,19 @@ func (s *TransactionStore) entriesFor(ctx context.Context, q querier, transactio
 }
 
 // Create inserts a transaction and its entries atomically. It rejects
-// transactions whose entries do not sum to zero before touching the
-// database; the database also enforces the same invariant as a safety
-// net (see db/schema.sql).
+// transactions whose entries do not sum to zero within each currency
+// before touching the database (amounts in different currencies are
+// never summed together); the database also enforces the same invariant
+// as a safety net (see db/schema.sql).
 func (s *TransactionStore) Create(ctx context.Context, t models.Transaction) (models.Transaction, error) {
-	var sum int64
+	sums := make(map[int64]int64, len(t.Entries))
 	for _, e := range t.Entries {
-		sum += e.Value
+		sums[e.CurrencyID] += e.Amount
 	}
-	if sum != 0 {
-		return models.Transaction{}, ErrUnbalanced
+	for _, sum := range sums {
+		if sum != 0 {
+			return models.Transaction{}, ErrUnbalanced
+		}
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -127,8 +130,8 @@ func (s *TransactionStore) Create(ctx context.Context, t models.Transaction) (mo
 	batch := &pgx.Batch{}
 	for _, e := range t.Entries {
 		batch.Queue(
-			`INSERT INTO transaction_entries (transaction_id, account_id, value) VALUES ($1, $2, $3)`,
-			t.ID, e.AccountID, e.Value)
+			`INSERT INTO transaction_entries (transaction_id, account_id, amount, currency_id) VALUES ($1, $2, $3, $4)`,
+			t.ID, e.AccountID, e.Amount, e.CurrencyID)
 	}
 	br := tx.SendBatch(ctx, batch)
 	for range t.Entries {
