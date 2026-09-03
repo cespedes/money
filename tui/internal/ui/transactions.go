@@ -80,12 +80,16 @@ func newTransactionsModel(c *client.Client) transactionsModel {
 
 	desc := textinput.New()
 	desc.Placeholder = "Description"
+	desc.SetWidth(30)
 	ts := textinput.New()
 	ts.Placeholder = timestampLayout + " (blank = now)"
+	ts.SetWidth(30)
 	acct := textinput.New()
 	acct.Placeholder = "Account ID"
+	acct.SetWidth(20)
 	val := textinput.New()
 	val.Placeholder = "Amount in the currency's minor unit (e.g. -1000 or 1000)"
+	val.SetWidth(30)
 
 	currencyPicker := table.New(
 		table.WithColumns([]table.Column{{Title: "Currency", Width: parentPickerWidth}}),

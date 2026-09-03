@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
@@ -20,6 +22,7 @@ const (
 	accountsModeCreate
 	accountsModeConfirmDelete
 	accountsModeLedger
+	accountsModeLedgerCreate
 )
 
 // createFocus identifies which of the "new account" form's three fields —
@@ -32,6 +35,20 @@ const (
 	focusCode
 )
 
+// ledgerEntryFocus identifies which of the ledger's "new entry" form's
+// six fields currently has focus (see startLedgerEntry).
+type ledgerEntryFocus int
+
+const (
+	focusEntryTimestamp ledgerEntryFocus = iota
+	focusEntryDescription
+	focusEntryAmount
+	focusEntryCurrency
+	focusEntryOtherAccount
+	focusEntryOtherAmount
+	numLedgerEntryFocusFields
+)
+
 type accountsModel struct {
 	client *client.Client
 
@@ -39,8 +56,13 @@ type accountsModel struct {
 	table      table.Model
 	rows       []client.Account
 	currencies currencyByID // for rendering Balances/ledger amounts
-	status     string
-	err        string
+	// currencyList is currencies' data as an ordered slice instead — for
+	// the ledger's "new entry" form's currency picker (see
+	// startLedgerEntry), which needs index-based navigation that a map
+	// can't give it.
+	currencyList []client.Currency
+	status       string
+	err          string
 
 	createFocus createFocus
 	// editingID is the account being edited's ID, or nil while creating a
@@ -62,6 +84,23 @@ type accountsModel struct {
 	ledgerEntries []client.LedgerEntry
 	ledgerTable   table.Model
 
+	// Ledger "new entry" form state (see startLedgerEntry): a compact,
+	// two-account transaction form reached from the ledger view, distinct
+	// from the Transactions tab's own multi-entry creation wizard.
+	ledgerEntryFocus ledgerEntryFocus
+	// ledgerEntryInputs holds [timestamp, description, amount,
+	// otherAmount] (see fieldEntryTimestamp etc.) — Currency and Other
+	// account are pickers instead, not plain text fields.
+	ledgerEntryInputs    []textinput.Model
+	ledgerCurrencyPicker table.Model
+	// ledgerOtherAccountOptions is every account except the one whose
+	// ledger is open, as an indented tree (see orderAccountsAsTree),
+	// mirroring how parentOptions works for the account form's Parent
+	// field — kept alongside ledgerAccountPicker so selectedAccountID can
+	// map its cursor back to an account ID.
+	ledgerOtherAccountOptions []accountTreeNode
+	ledgerAccountPicker       table.Model
+
 	// windowHeight is the last content height passed to SetSize, kept so
 	// the parent dropdown can be resized again when the account list
 	// changes (see syncParentPickerHeight).
@@ -78,6 +117,14 @@ type accountsModel struct {
 const (
 	fieldAccountName = iota
 	fieldAccountCode
+)
+
+// Indices into ledgerEntryInputs (see accountsModel).
+const (
+	fieldEntryTimestamp = iota
+	fieldEntryDescription
+	fieldEntryAmount
+	fieldEntryOtherAmount
 )
 
 // moneyColumnWidth is the width of every single-amount "Value"/"Balance"
@@ -138,12 +185,46 @@ func newAccountsModel(c *client.Client) accountsModel {
 		table.WithWidth(parentPickerWidth),
 	)
 
+	entryTimestamp := textinput.New()
+	entryTimestamp.Prompt = ""
+	entryTimestamp.SetWidth(20)
+	entryDesc := textinput.New()
+	entryDesc.Placeholder = "required"
+	entryDesc.Prompt = ""
+	entryDesc.SetWidth(30)
+	entryAmount := textinput.New()
+	entryAmount.Placeholder = "e.g. -1000"
+	entryAmount.Prompt = ""
+	entryAmount.SetWidth(20)
+	entryOtherAmount := textinput.New()
+	entryOtherAmount.Placeholder = "blank = auto-balance"
+	entryOtherAmount.Prompt = ""
+	entryOtherAmount.SetWidth(25)
+
+	ledgerCurrencyPicker := table.New(
+		table.WithColumns([]table.Column{{Title: "", Width: parentPickerWidth}}),
+		table.WithFocused(true),
+		table.WithWidth(parentPickerWidth),
+		table.WithHeight(8),
+	)
+	ledgerAccountPicker := table.New(
+		table.WithColumns([]table.Column{{Title: "", Width: parentPickerWidth}}),
+		table.WithFocused(true),
+		table.WithWidth(parentPickerWidth),
+		table.WithHeight(8),
+	)
+
 	return accountsModel{
 		client:       c,
 		table:        t,
 		inputs:       []textinput.Model{name, code},
 		ledgerTable:  ledgerTable,
 		parentPicker: parentPicker,
+		ledgerEntryInputs: []textinput.Model{
+			entryTimestamp, entryDesc, entryAmount, entryOtherAmount,
+		},
+		ledgerCurrencyPicker: ledgerCurrencyPicker,
+		ledgerAccountPicker:  ledgerAccountPicker,
 	}
 }
 
@@ -208,6 +289,10 @@ type ledgerLoadedMsg struct {
 	err     error
 }
 
+type ledgerEntryMutatedMsg struct {
+	err error
+}
+
 func (m accountsModel) loadAccounts() tea.Msg {
 	accounts, err := m.client.ListAccounts(context.Background())
 	return accountsLoadedMsg{accounts: accounts, err: err}
@@ -263,6 +348,7 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		}
 		m.err = ""
 		m.currencies = indexCurrencies(msg.currencies)
+		m.currencyList = msg.currencies
 		// Re-render whatever's already on screen so amounts reflect the
 		// freshly (re)loaded currency formatting, regardless of whether
 		// accounts or the ledger loaded first.
@@ -294,6 +380,15 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		m.ledgerTable.SetRows(ledgerToRows(msg.entries, m.currencies))
 		return m, nil
 
+	case ledgerEntryMutatedMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.mode = accountsModeLedger
+		return m, m.loadLedger(m.ledgerAccount.ID)
+
 	case tea.KeyMsg:
 		switch m.mode {
 		case accountsModeList:
@@ -304,6 +399,8 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 			return m.updateConfirmDelete(msg)
 		case accountsModeLedger:
 			return m.updateLedger(msg)
+		case accountsModeLedgerCreate:
+			return m.updateLedgerCreate(msg)
 		}
 	}
 
@@ -397,10 +494,179 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		m.mode = accountsModeList
 		m.err = ""
 		return m, nil
+	case "n":
+		if len(m.currencyList) == 0 {
+			m.err = "create a currency first (see the Currencies tab)"
+			return m, nil
+		}
+		if len(accountsOtherThan(m.rows, m.ledgerAccount.ID)) == 0 {
+			m.err = "create another account first"
+			return m, nil
+		}
+		m.startLedgerEntry()
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.ledgerTable, cmd = m.ledgerTable.Update(msg)
 	return m, cmd
+}
+
+// startLedgerEntry opens the ledger's compact "new entry" form (see
+// ledgerEntryModeView), pre-filled with the current date/time, an empty
+// description and amount, and the currency last used in this account's
+// own ledger (or the first available currency if it has none yet) — a
+// quick two-account transaction between the account whose ledger is open
+// and one picked from the rest.
+func (m *accountsModel) startLedgerEntry() {
+	m.mode = accountsModeLedgerCreate
+	m.ledgerEntryInputs[fieldEntryTimestamp].SetValue(time.Now().Format(timestampLayout))
+	m.ledgerEntryInputs[fieldEntryDescription].SetValue("")
+	m.ledgerEntryInputs[fieldEntryAmount].SetValue("")
+	m.ledgerEntryInputs[fieldEntryOtherAmount].SetValue("")
+
+	m.ledgerCurrencyPicker.SetRows(currencyPickerRows(m.currencyList))
+	m.ledgerCurrencyPicker.SetCursor(currencyCursorFor(lastUsedCurrencyID(m.ledgerEntries, m.currencyList), m.currencyList))
+
+	m.ledgerOtherAccountOptions = orderAccountsAsTree(accountsOtherThan(m.rows, m.ledgerAccount.ID))
+	m.ledgerAccountPicker.SetRows(parentDropdownRows(m.ledgerOtherAccountOptions)[1:]) // drop the "(none)" row: not valid here
+	m.ledgerAccountPicker.SetCursor(0)
+
+	m.setLedgerEntryFocus(focusEntryTimestamp)
+	m.err = ""
+}
+
+func (m *accountsModel) setLedgerEntryFocus(f ledgerEntryFocus) {
+	m.ledgerEntryFocus = f
+	for i := range m.ledgerEntryInputs {
+		m.ledgerEntryInputs[i].Blur()
+	}
+	switch f {
+	case focusEntryTimestamp:
+		m.ledgerEntryInputs[fieldEntryTimestamp].Focus()
+	case focusEntryDescription:
+		m.ledgerEntryInputs[fieldEntryDescription].Focus()
+	case focusEntryAmount:
+		m.ledgerEntryInputs[fieldEntryAmount].Focus()
+	case focusEntryOtherAmount:
+		m.ledgerEntryInputs[fieldEntryOtherAmount].Focus()
+	}
+}
+
+// updateLedgerCreate handles the ledger's "new entry" form: tab/shift+tab
+// are the only way to move between its six fields (matching the account
+// form's own convention), enter submits from any of them, and esc cancels
+// back to the ledger view.
+func (m accountsModel) updateLedgerCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = accountsModeLedger
+		m.err = ""
+		return m, nil
+	case "enter":
+		return m.submitLedgerEntry()
+	case "tab":
+		m.setLedgerEntryFocus((m.ledgerEntryFocus + 1) % numLedgerEntryFocusFields)
+		return m, nil
+	case "shift+tab":
+		m.setLedgerEntryFocus((m.ledgerEntryFocus + numLedgerEntryFocusFields - 1) % numLedgerEntryFocusFields)
+		return m, nil
+	}
+
+	switch m.ledgerEntryFocus {
+	case focusEntryTimestamp:
+		var cmd tea.Cmd
+		m.ledgerEntryInputs[fieldEntryTimestamp], cmd = m.ledgerEntryInputs[fieldEntryTimestamp].Update(msg)
+		return m, cmd
+	case focusEntryDescription:
+		var cmd tea.Cmd
+		m.ledgerEntryInputs[fieldEntryDescription], cmd = m.ledgerEntryInputs[fieldEntryDescription].Update(msg)
+		return m, cmd
+	case focusEntryAmount:
+		var cmd tea.Cmd
+		m.ledgerEntryInputs[fieldEntryAmount], cmd = m.ledgerEntryInputs[fieldEntryAmount].Update(msg)
+		return m, cmd
+	case focusEntryCurrency:
+		var cmd tea.Cmd
+		m.ledgerCurrencyPicker, cmd = m.ledgerCurrencyPicker.Update(msg)
+		return m, cmd
+	case focusEntryOtherAccount:
+		var cmd tea.Cmd
+		m.ledgerAccountPicker, cmd = m.ledgerAccountPicker.Update(msg)
+		return m, cmd
+	case focusEntryOtherAmount:
+		var cmd tea.Cmd
+		m.ledgerEntryInputs[fieldEntryOtherAmount], cmd = m.ledgerEntryInputs[fieldEntryOtherAmount].Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// submitLedgerEntry validates and posts the two-entry transaction built
+// by the ledger's "new entry" form: this account (whose ledger is open)
+// for the typed amount, and whichever account is picked for the other
+// side, in the same currency for both. If the other side's amount is
+// left blank, it's taken to be whatever balances the transaction (the
+// first amount, negated) — the transaction needs no separate balance
+// check the way the Transactions tab's general wizard does, since with
+// exactly two entries in one currency there's only ever one way to
+// balance them.
+func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
+	desc := strings.TrimSpace(m.ledgerEntryInputs[fieldEntryDescription].Value())
+	if desc == "" {
+		m.err = "description is required"
+		m.setLedgerEntryFocus(focusEntryDescription)
+		return m, nil
+	}
+	ts, err := time.ParseInLocation(timestampLayout, strings.TrimSpace(m.ledgerEntryInputs[fieldEntryTimestamp].Value()), time.Local)
+	if err != nil {
+		m.err = "timestamp must look like " + timestampLayout
+		m.setLedgerEntryFocus(focusEntryTimestamp)
+		return m, nil
+	}
+	amount, err := strconv.ParseInt(strings.TrimSpace(m.ledgerEntryInputs[fieldEntryAmount].Value()), 10, 64)
+	if err != nil {
+		m.err = "amount must be an integer"
+		m.setLedgerEntryFocus(focusEntryAmount)
+		return m, nil
+	}
+	currency, ok := currencyAt(m.ledgerCurrencyPicker.Cursor(), m.currencyList)
+	if !ok {
+		m.err = "pick a currency"
+		m.setLedgerEntryFocus(focusEntryCurrency)
+		return m, nil
+	}
+	otherAccountID, ok := selectedAccountID(m.ledgerAccountPicker.Cursor(), m.ledgerOtherAccountOptions)
+	if !ok {
+		m.err = "pick another account"
+		m.setLedgerEntryFocus(focusEntryOtherAccount)
+		return m, nil
+	}
+	otherAmount := -amount
+	if raw := strings.TrimSpace(m.ledgerEntryInputs[fieldEntryOtherAmount].Value()); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			m.err = "amount must be an integer"
+			m.setLedgerEntryFocus(focusEntryOtherAmount)
+			return m, nil
+		}
+		otherAmount = parsed
+	}
+
+	transaction := client.Transaction{
+		Description: desc,
+		Timestamp:   ts,
+		Entries: []client.Entry{
+			{AccountID: m.ledgerAccount.ID, Amount: amount, CurrencyID: currency.ID},
+			{AccountID: otherAccountID, Amount: otherAmount, CurrencyID: currency.ID},
+		},
+	}
+
+	m.err = ""
+	c := m.client
+	return m, func() tea.Msg {
+		_, err := c.CreateTransaction(context.Background(), transaction)
+		return ledgerEntryMutatedMsg{err: err}
+	}
 }
 
 // updateCreate handles the "new account" form: Parent, Name, and Code are
@@ -535,6 +801,79 @@ func accountsExcludingSubtree(accounts []client.Account, rootID int64) []client.
 		}
 	}
 	return out
+}
+
+// accountsOtherThan returns accounts with the one matching excludeID left
+// out, preserving order — for the ledger's "new entry" form (see
+// startLedgerEntry), whose "other account" picker must offer every
+// account except the one whose ledger is being viewed.
+func accountsOtherThan(accounts []client.Account, excludeID int64) []client.Account {
+	out := make([]client.Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a.ID != excludeID {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// selectedAccountID maps a picker cursor position to an account ID
+// within options — like selectedParentID, but with no "(none)" choice at
+// index 0, since a transaction entry always needs a real account (see
+// ledgerAccountPicker).
+func selectedAccountID(cursor int, options []accountTreeNode) (id int64, ok bool) {
+	if cursor < 0 || cursor >= len(options) {
+		return 0, false
+	}
+	return options[cursor].account.ID, true
+}
+
+// lastUsedCurrencyID is entries' most recent CurrencyID (entries is
+// assumed sorted oldest-first, as GetAccountLedger returns them), or
+// fallback's first currency if entries is empty, or 0 if both are — used
+// to default the ledger's "new entry" form's currency to whatever this
+// account was last posted in (see startLedgerEntry).
+func lastUsedCurrencyID(entries []client.LedgerEntry, fallback []client.Currency) int64 {
+	if len(entries) > 0 {
+		return entries[len(entries)-1].CurrencyID
+	}
+	if len(fallback) > 0 {
+		return fallback[0].ID
+	}
+	return 0
+}
+
+// currencyPickerRows lists every currency in currencies, in the same
+// order, so a picker cursor position can be mapped back to one directly
+// by index (see currencyAt) — no ID shown, matching the accounts list's
+// own convention.
+func currencyPickerRows(currencies []client.Currency) []table.Row {
+	rows := make([]table.Row, 0, len(currencies))
+	for _, c := range currencies {
+		rows = append(rows, table.Row{c.Name})
+	}
+	return rows
+}
+
+// currencyAt maps a picker cursor position back to a currency within
+// currencies (see currencyPickerRows).
+func currencyAt(cursor int, currencies []client.Currency) (client.Currency, bool) {
+	if cursor < 0 || cursor >= len(currencies) {
+		return client.Currency{}, false
+	}
+	return currencies[cursor], true
+}
+
+// currencyCursorFor is the inverse of currencyAt's index mapping, used to
+// preselect a currency (see startLedgerEntry) by ID. Falls back to 0 if
+// id isn't found in currencies.
+func currencyCursorFor(id int64, currencies []client.Currency) int {
+	for i, c := range currencies {
+		if c.ID == id {
+			return i
+		}
+	}
+	return 0
 }
 
 // startEdit opens the same pop-up as "n" (see createPopup), pre-filled
@@ -787,16 +1126,61 @@ func (m accountsModel) createPopup() string {
 		strings.Join(headers, "  ") + "\n" +
 		strings.Join(values, "  ")
 	if m.createFocus == focusParent {
-		picker := m.parentPicker.View()
-		if _, rest, ok := strings.Cut(picker, "\n"); ok {
-			picker = rest // drop the picker's own (blank) column header
-		}
-		content += "\n" + picker
+		content += "\n" + stripPickerHeader(m.parentPicker.View())
 	}
 	if m.err != "" {
 		content += "\n\n" + errorStyle.Render("Error: "+m.err)
 	}
 	return popupStyle.Render(content)
+}
+
+// ledgerEntryFormView renders the ledger's "new entry" form (see
+// startLedgerEntry): this account's own timestamp/description/amount/
+// currency, then the other side's account and optional amount. Currency
+// and Other account are pickers — while one has focus, its dropdown is
+// shown (header stripped, so it sits flush below); otherwise the
+// currently chosen option shows as plain text instead, the same
+// focused-vs-not treatment as the account form's own Parent field (see
+// createPopup), so the selection stays visible while editing other
+// fields. Unlike createPopup, this isn't a pop-up composited over
+// something else — like the Transactions tab's own creation wizard, it
+// replaces the ledger table in place (see View()).
+func (m accountsModel) ledgerEntryFormView() string {
+	var b strings.Builder
+	b.WriteString(formLabelStyle.Render("New entry in " + m.ledgerAccount.Name))
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("Timestamp:    "))
+	b.WriteString(m.ledgerEntryInputs[fieldEntryTimestamp].View())
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Description:  "))
+	b.WriteString(m.ledgerEntryInputs[fieldEntryDescription].View())
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Amount:       "))
+	b.WriteString(m.ledgerEntryInputs[fieldEntryAmount].View())
+	b.WriteString("\n")
+
+	b.WriteString(dimStyle.Render("Currency:     "))
+	if m.ledgerEntryFocus == focusEntryCurrency {
+		b.WriteString("\n")
+		b.WriteString(stripPickerHeader(m.ledgerCurrencyPicker.View()))
+	} else if c, ok := currencyAt(m.ledgerCurrencyPicker.Cursor(), m.currencyList); ok {
+		b.WriteString(c.Name)
+	}
+	b.WriteString("\n\n")
+
+	b.WriteString(dimStyle.Render("Other account:"))
+	if m.ledgerEntryFocus == focusEntryOtherAccount {
+		b.WriteString("\n")
+		b.WriteString(stripPickerHeader(m.ledgerAccountPicker.View()))
+	} else if cursor := m.ledgerAccountPicker.Cursor(); cursor >= 0 && cursor < len(m.ledgerOtherAccountOptions) {
+		b.WriteString(" " + m.ledgerOtherAccountOptions[cursor].account.Name)
+	}
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Other amount (optional): "))
+	b.WriteString(m.ledgerEntryInputs[fieldEntryOtherAmount].View())
+
+	return b.String()
 }
 
 func (m accountsModel) View() string {
@@ -811,6 +1195,8 @@ func (m accountsModel) View() string {
 		b.WriteString(formLabelStyle.Render(fmt.Sprintf("Transactions for #%d %s", m.ledgerAccount.ID, m.ledgerAccount.Name)))
 		b.WriteString("\n\n")
 		b.WriteString(m.ledgerTable.View())
+	case accountsModeLedgerCreate:
+		b.WriteString(m.ledgerEntryFormView())
 	default:
 		// accountsModeCreate shows its own pop-up (see createPopup),
 		// composited over this same list view by App.View — so the list

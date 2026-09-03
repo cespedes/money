@@ -234,8 +234,9 @@ directly (see above) to record and query exchange rates.
 `Tab`/`Shift+Tab` cycle through the Accounts, Transactions, and Currencies
 views. Within a view: `↑`/`↓` navigate, `n` creates a new record, `r`
 refreshes, `Enter` opens a transaction's entries or an account's ledger
-(Currencies has no such drill-down). `Esc` cancels a form or backs out of
-a ledger/detail view, `q` quits. Accounts and Currencies also support `e`
+(Currencies has no such drill-down). Inside an account's ledger, `n`
+instead adds a transaction (see below), rather than a new account. `Esc`
+cancels a form or backs out of a ledger/detail view, `q` quits. Accounts and Currencies also support `e`
 to edit the selected record and `d` to delete it; Transactions only
 supports `d` (no edit). Accounts additionally support `K`/`J` to move the
 selected account up/down among its siblings (see `POST /accounts/{id}/move`
@@ -288,6 +289,17 @@ and then repeatedly asks for an account, a currency (picked from a
 dropdown, the same way an account's parent is), and an amount — until you
 confirm you're done. A transaction can mix currencies freely; it will
 only submit once each currency's own entries sum to zero.
+
+Pressing `n` inside an account's ledger is a quicker path to the common
+case: a transaction between that account and exactly one other, in one
+currency. It pre-fills the current date/time, an empty description and
+amount, and whichever currency this account's ledger was last posted in
+(or the first available currency, if it has none yet) — all editable —
+then asks for the other account (a dropdown, everything but the account
+whose ledger is open) and, optionally, its own amount; left blank, that
+amount is taken to be whatever balances the transaction against the
+first amount. `Tab`/`Shift+Tab` move between all six fields; `Enter`
+submits from any of them.
 
 ## Project layout
 

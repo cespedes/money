@@ -935,6 +935,291 @@ func TestAccountsModel_QKeyGoesBackFromLedger(t *testing.T) {
 	}
 }
 
+// newTestLedgerModel returns a model already inside the ledger view for
+// account 5 ("Cash"), with account 6 ("Revenue") available as the other
+// side of an entry, and currencyList set to currencies (defaulting to
+// just testUSD if none are given) — a common starting point for the
+// ledger "new entry" form's tests below.
+func newTestLedgerModel(t *testing.T, handler http.HandlerFunc, ledgerEntries []client.LedgerEntry, currencies ...client.Currency) accountsModel {
+	t.Helper()
+	if len(currencies) == 0 {
+		currencies = []client.Currency{testUSD}
+	}
+	m := newTestAccountsModel(t, handler)
+	m.rows = []client.Account{{ID: 5, Name: "Cash"}, {ID: 6, Name: "Revenue"}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+	m.currencyList = currencies
+	m.mode = accountsModeLedger
+	m.ledgerAccount = m.rows[0]
+	m.ledgerEntries = ledgerEntries
+	return m
+}
+
+func TestAccountsModel_LedgerNKeyRequiresCurrency(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m.currencyList = nil
+
+	m, _ = m.Update(keyPress("n"))
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger (n should be a no-op)", m.mode)
+	}
+	if m.err == "" {
+		t.Fatal("expected an error about needing a currency first")
+	}
+}
+
+func TestAccountsModel_LedgerNKeyRequiresAnotherAccount(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m.rows = []client.Account{m.ledgerAccount} // no other account exists
+
+	m, _ = m.Update(keyPress("n"))
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger (n should be a no-op)", m.mode)
+	}
+	if m.err == "" {
+		t.Fatal("expected an error about needing another account first")
+	}
+}
+
+func TestAccountsModel_LedgerNKeyOpensFormWithDefaults(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+
+	m, _ = m.Update(keyPress("n"))
+	if m.mode != accountsModeLedgerCreate {
+		t.Fatalf("mode = %v, want accountsModeLedgerCreate", m.mode)
+	}
+	if m.ledgerEntryFocus != focusEntryTimestamp {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+	}
+	if got := m.ledgerEntryInputs[fieldEntryDescription].Value(); got != "" {
+		t.Errorf("Description = %q, want empty", got)
+	}
+	if got := m.ledgerEntryInputs[fieldEntryAmount].Value(); got != "" {
+		t.Errorf("Amount = %q, want empty", got)
+	}
+	ts, err := time.ParseInLocation(timestampLayout, m.ledgerEntryInputs[fieldEntryTimestamp].Value(), time.Local)
+	if err != nil {
+		t.Fatalf("Timestamp = %q, want a value matching %s: %v", m.ledgerEntryInputs[fieldEntryTimestamp].Value(), timestampLayout, err)
+	}
+	if diff := time.Since(ts); diff < 0 || diff > time.Minute {
+		t.Errorf("Timestamp = %v, want close to now", ts)
+	}
+	// Only one currency (USD) and one other account (Revenue) exist, so
+	// both pickers default to index 0.
+	if got := m.ledgerCurrencyPicker.Cursor(); got != 0 {
+		t.Errorf("currency cursor = %d, want 0 (USD)", got)
+	}
+	if got := m.ledgerAccountPicker.Cursor(); got != 0 {
+		t.Errorf("account cursor = %d, want 0 (Revenue)", got)
+	}
+	if len(m.ledgerOtherAccountOptions) != 1 || m.ledgerOtherAccountOptions[0].account.ID != 6 {
+		t.Fatalf("ledgerOtherAccountOptions = %+v, want just Revenue (ID 6)", m.ledgerOtherAccountOptions)
+	}
+}
+
+func TestAccountsModel_LedgerEntryDefaultsToLastUsedCurrency(t *testing.T) {
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	entries := []client.LedgerEntry{
+		{CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000},
+		{CurrencyID: eur.ID, Amount: 500, Balance: 500}, // most recent: EUR
+	}
+	m := newTestLedgerModel(t, nil, entries, testUSD, eur)
+
+	m, _ = m.Update(keyPress("n"))
+	if got := m.ledgerCurrencyPicker.Cursor(); got != 1 {
+		t.Fatalf("currency cursor = %d, want 1 (EUR, the last-used currency)", got)
+	}
+}
+
+func TestAccountsModel_LedgerEntryDefaultsToFirstCurrencyWhenNoLedgerEntries(t *testing.T) {
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	m := newTestLedgerModel(t, nil, nil, testUSD, eur)
+
+	m, _ = m.Update(keyPress("n"))
+	if got := m.ledgerCurrencyPicker.Cursor(); got != 0 {
+		t.Fatalf("currency cursor = %d, want 0 (USD, the first currency, with no ledger history)", got)
+	}
+}
+
+func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n"))
+
+	order := []ledgerEntryFocus{
+		focusEntryTimestamp, focusEntryDescription, focusEntryAmount,
+		focusEntryCurrency, focusEntryOtherAccount, focusEntryOtherAmount,
+		focusEntryTimestamp,
+	}
+	for i, want := range order[1:] {
+		m, _ = m.Update(keyPress("tab"))
+		if m.ledgerEntryFocus != want {
+			t.Fatalf("after tab #%d: ledgerEntryFocus = %v, want %v", i+1, m.ledgerEntryFocus, want)
+		}
+	}
+	m, _ = m.Update(keyPress("shift+tab"))
+	if m.ledgerEntryFocus != focusEntryOtherAmount {
+		t.Fatalf("after shift+tab: ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
+	}
+}
+
+func TestAccountsModel_LedgerEntryEscCancelsBackToLedger(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("esc"))
+
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+}
+
+func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
+	setupToField := func(t *testing.T, focus ledgerEntryFocus) accountsModel {
+		m := newTestLedgerModel(t, nil, nil)
+		m, _ = m.Update(keyPress("n"))
+		for m.ledgerEntryFocus != focus {
+			m, _ = m.Update(keyPress("tab"))
+		}
+		return m
+	}
+
+	t.Run("empty description", func(t *testing.T) {
+		m := setupToField(t, focusEntryTimestamp)
+		m, _ = m.Update(keyPress("enter"))
+		if m.err != "description is required" {
+			t.Fatalf("err = %q, want %q", m.err, "description is required")
+		}
+		if m.ledgerEntryFocus != focusEntryDescription {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryDescription", m.ledgerEntryFocus)
+		}
+	})
+
+	t.Run("bad timestamp", func(t *testing.T) {
+		m := setupToField(t, focusEntryDescription)
+		m = typeString(m, "Refund")
+		m.ledgerEntryInputs[fieldEntryTimestamp].SetValue("not a timestamp")
+		m, _ = m.Update(keyPress("enter"))
+		if m.err == "" {
+			t.Fatal("expected a timestamp error")
+		}
+		if m.ledgerEntryFocus != focusEntryTimestamp {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+		}
+	})
+
+	t.Run("bad amount", func(t *testing.T) {
+		m := setupToField(t, focusEntryDescription)
+		m = typeString(m, "Refund")
+		m, _ = m.Update(keyPress("enter"))
+		if m.err != "amount must be an integer" {
+			t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+		}
+		if m.ledgerEntryFocus != focusEntryAmount {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryAmount", m.ledgerEntryFocus)
+		}
+	})
+
+	t.Run("bad other amount", func(t *testing.T) {
+		m := setupToField(t, focusEntryDescription)
+		m = typeString(m, "Refund")
+		m, _ = m.Update(keyPress("tab")) // -> Amount
+		m = typeString(m, "500")
+		m.ledgerEntryInputs[fieldEntryOtherAmount].SetValue("not a number")
+		m, _ = m.Update(keyPress("enter"))
+		if m.err != "amount must be an integer" {
+			t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+		}
+		if m.ledgerEntryFocus != focusEntryOtherAmount {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
+		}
+	})
+}
+
+func TestAccountsModel_LedgerEntrySubmitBalancesWhenOtherAmountBlank(t *testing.T) {
+	var gotPath string
+	var gotTransaction client.Transaction
+	m := newTestLedgerModel(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotTransaction)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(gotTransaction)
+	}, nil)
+
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Description
+	m = typeString(m, "Refund")
+	m, _ = m.Update(keyPress("tab")) // -> Amount
+	m = typeString(m, "500")
+	// Leave Currency (defaults to USD) and Other account (defaults to
+	// Revenue, the only other account) untouched, and Other amount blank.
+
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the transaction")
+	}
+	msg := cmd()
+	mutated, ok := msg.(ledgerEntryMutatedMsg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotPath != "/transactions" {
+		t.Fatalf("path = %q, want /transactions", gotPath)
+	}
+	if gotTransaction.Description != "Refund" {
+		t.Fatalf("Description = %q, want %q", gotTransaction.Description, "Refund")
+	}
+	if len(gotTransaction.Entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(gotTransaction.Entries))
+	}
+	want := []client.Entry{
+		{AccountID: 5, Amount: 500, CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: -500, CurrencyID: testUSD.ID},
+	}
+	if !reflect.DeepEqual(gotTransaction.Entries, want) {
+		t.Fatalf("Entries = %+v, want %+v", gotTransaction.Entries, want)
+	}
+
+	m, cmd = m.Update(mutated)
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to reload the ledger")
+	}
+}
+
+func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
+	var gotTransaction client.Transaction
+	m := newTestLedgerModel(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotTransaction)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(gotTransaction)
+	}, nil)
+
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Description
+	m = typeString(m, "Split")
+	m, _ = m.Update(keyPress("tab")) // -> Amount
+	m = typeString(m, "500")
+	m, _ = m.Update(keyPress("tab")) // -> Currency
+	m, _ = m.Update(keyPress("tab")) // -> Other account
+	m, _ = m.Update(keyPress("tab")) // -> Other amount
+	m = typeString(m, "-300")
+
+	_, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the transaction")
+	}
+	cmd()
+
+	want := []client.Entry{
+		{AccountID: 5, Amount: 500, CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: -300, CurrencyID: testUSD.ID},
+	}
+	if !reflect.DeepEqual(gotTransaction.Entries, want) {
+		t.Fatalf("Entries = %+v, want %+v (an explicit other amount, not auto-balanced)", gotTransaction.Entries, want)
+	}
+}
+
 // TestAccountsModel_EnterUsesTreeOrder is a regression test: the table
 // displays accounts in tree order (a child right after its parent), which
 // can differ from the API's ID order whenever a child's ID doesn't

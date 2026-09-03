@@ -88,6 +88,20 @@ func columnHeader(label string, focused bool) string {
 	return style.Width(createFieldWidth).Render(label)
 }
 
+// stripPickerHeader drops a table.Model's own column header line from its
+// rendered View() — used for the blank-titled ({Title: ""}) dropdown
+// pickers throughout the TUI (Parent, Currency, other-account), whose
+// header exists only so table.Model reserves a row for it internally
+// (see e.g. syncParentPickerHeight), not to show any text — so a
+// dropdown sits flush under whatever field precedes it instead of
+// leaving a blank line above its first row.
+func stripPickerHeader(view string) string {
+	if _, rest, ok := strings.Cut(view, "\n"); ok {
+		return rest
+	}
+	return view
+}
+
 // overlayCentered composites popup on top of background, centered within
 // a width x height viewport (e.g. the terminal size), so it reads as a
 // pop-up floating over whatever's currently on screen. If width or height
