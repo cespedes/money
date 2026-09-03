@@ -191,6 +191,30 @@ func TestMoveAccount_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateAccount_RejectsCycle(t *testing.T) {
+	h := newTestHandler(t)
+
+	var parent, child models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Assets"}, &parent)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash", ParentID: &parent.ID}, &child)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/accounts/%d", parent.ID),
+		models.Account{Name: "Assets", ParentID: &child.ID}, &body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if body["error"] != "an account cannot be its own ancestor" {
+		t.Fatalf("body = %v", body)
+	}
+
+	var got models.Account
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", parent.ID), nil, &got)
+	if got.ParentID != nil {
+		t.Fatalf("ParentID after rejected update = %v, want unchanged nil", got.ParentID)
+	}
+}
+
 func balanceFor(balances []models.CurrencyAmount, currencyID int64) (int64, bool) {
 	for _, b := range balances {
 		if b.CurrencyID == currencyID {

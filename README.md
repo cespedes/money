@@ -201,9 +201,10 @@ Editing reuses the same pop-up as creating (see below), pre-filled with
 the selected record's current values, and submits a PUT instead of a POST
 on `Enter` — the pop-up's title and the footer's hint ("save" instead of
 "create") reflect which mode it's in. Editing an account leaves that
-account out of its own Parent dropdown, since choosing itself would form
-a single-node cycle (nothing else currently stops a cycle forming further
-up the hierarchy, e.g. through a grandparent).
+account and all of its descendants out of its own Parent dropdown, since
+choosing any of them would make the account its own ancestor; the API
+rejects such an update too (`400`, "an account cannot be its own
+ancestor"), as a safety net against any other writer.
 
 Every displayed amount is formatted per its own currency's rules (name
 position/spacing, thousands/decimal separators, decimal places) via

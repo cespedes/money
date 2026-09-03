@@ -15,6 +15,10 @@ var ErrNotFound = errors.New("not found")
 // zero.
 var ErrUnbalanced = errors.New("transaction entries do not sum to zero")
 
+// ErrCycle is returned when an account update's parent_id would make the
+// account its own ancestor (directly, or through some chain of parents).
+var ErrCycle = errors.New("account cannot be its own ancestor")
+
 type Store struct {
 	Accounts     *AccountStore
 	Transactions *TransactionStore

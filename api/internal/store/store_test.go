@@ -235,6 +235,85 @@ func TestAccountStore_MoveNotFound(t *testing.T) {
 	}
 }
 
+func TestAccountStore_UpdateRejectsSelfAsParent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	a, err := s.Accounts.Create(ctx, models.Account{Name: "Assets"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = s.Accounts.Update(ctx, models.Account{ID: a.ID, Name: "Assets", ParentID: &a.ID})
+	if !errors.Is(err, store.ErrCycle) {
+		t.Fatalf("update with itself as parent: got %v, want ErrCycle", err)
+	}
+
+	got, err := s.Accounts.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ParentID != nil {
+		t.Fatalf("ParentID after rejected update = %v, want unchanged nil", got.ParentID)
+	}
+}
+
+func TestAccountStore_UpdateRejectsDescendantAsParent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	grandparent, err := s.Accounts.Create(ctx, models.Account{Name: "Assets"})
+	if err != nil {
+		t.Fatalf("create grandparent: %v", err)
+	}
+	parent, err := s.Accounts.Create(ctx, models.Account{Name: "Banks", ParentID: &grandparent.ID})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child, err := s.Accounts.Create(ctx, models.Account{Name: "Checking", ParentID: &parent.ID})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	// Directly: grandparent's parent can't be its immediate child.
+	_, err = s.Accounts.Update(ctx, models.Account{ID: grandparent.ID, Name: "Assets", ParentID: &parent.ID})
+	if !errors.Is(err, store.ErrCycle) {
+		t.Fatalf("update with a child as parent: got %v, want ErrCycle", err)
+	}
+
+	// Transitively: grandparent's parent can't be its grandchild either.
+	_, err = s.Accounts.Update(ctx, models.Account{ID: grandparent.ID, Name: "Assets", ParentID: &child.ID})
+	if !errors.Is(err, store.ErrCycle) {
+		t.Fatalf("update with a grandchild as parent: got %v, want ErrCycle", err)
+	}
+}
+
+func TestAccountStore_UpdateAllowsReparentingToUnrelatedAccount(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	assets, err := s.Accounts.Create(ctx, models.Account{Name: "Assets"})
+	if err != nil {
+		t.Fatalf("create Assets: %v", err)
+	}
+	liabilities, err := s.Accounts.Create(ctx, models.Account{Name: "Liabilities"})
+	if err != nil {
+		t.Fatalf("create Liabilities: %v", err)
+	}
+	child, err := s.Accounts.Create(ctx, models.Account{Name: "Cash", ParentID: &assets.ID})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	updated, err := s.Accounts.Update(ctx, models.Account{ID: child.ID, Name: "Cash", ParentID: &liabilities.ID})
+	if err != nil {
+		t.Fatalf("reparent to an unrelated account: %v", err)
+	}
+	if updated.ParentID == nil || *updated.ParentID != liabilities.ID {
+		t.Fatalf("ParentID after reparenting = %v, want %d", updated.ParentID, liabilities.ID)
+	}
+}
+
 func isPgErrorCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == code

@@ -646,6 +646,45 @@ func TestAccountsModel_EKeyPrefillsForm(t *testing.T) {
 	}
 }
 
+// TestAccountsModel_EKeyExcludesDescendantsFromParentOptions is a
+// regression test: editing an account with children must exclude those
+// children (and their own descendants) from its Parent dropdown too, not
+// just the account itself — choosing a descendant as the new parent
+// would form a cycle just as choosing itself would (see
+// accountsExcludingSubtree; the API's AccountStore rejects this too, but
+// the TUI shouldn't offer it as a choice in the first place).
+func TestAccountsModel_EKeyExcludesDescendantsFromParentOptions(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 30)
+	assetsID := int64(1)
+	banksID := int64(2)
+	m.rows = []client.Account{
+		{ID: 1, Name: "Assets"},
+		{ID: 2, Name: "Banks", ParentID: &assetsID},
+		{ID: 3, Name: "SelfBank", ParentID: &banksID},
+	}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Banks)
+	m, _ = m.Update(keyPress("e"))
+
+	var dropdownNames []string
+	for _, r := range m.parentPicker.Rows() {
+		if len(r) > 0 {
+			dropdownNames = append(dropdownNames, strings.TrimSpace(r[0]))
+		}
+	}
+	if slices.Contains(dropdownNames, "Banks") {
+		t.Errorf("Parent dropdown should not offer the account being edited, got %v", dropdownNames)
+	}
+	if slices.Contains(dropdownNames, "SelfBank") {
+		t.Errorf("Parent dropdown should not offer a descendant of the account being edited, got %v", dropdownNames)
+	}
+	if !slices.Contains(dropdownNames, "Assets") {
+		t.Errorf("Parent dropdown should still offer unrelated accounts, got %v", dropdownNames)
+	}
+}
+
 func TestAccountsModel_EditSubmitsUpdate(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotAccount client.Account

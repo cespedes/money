@@ -171,8 +171,17 @@ func (s *AccountStore) Create(ctx context.Context, a models.Account) (models.Acc
 // Update leaves a.Position untouched in the database regardless of what
 // it's set to — position only ever changes via Move, so that reordering
 // can't be lost by an unrelated field edit that doesn't happen to know
-// the account's current position.
+// the account's current position. Returns ErrCycle instead of writing
+// anything if a.ParentID would make a its own ancestor.
 func (s *AccountStore) Update(ctx context.Context, a models.Account) (models.Account, error) {
+	cyclic, err := s.wouldCreateCycle(ctx, a.ID, a.ParentID)
+	if err != nil {
+		return models.Account{}, err
+	}
+	if cyclic {
+		return models.Account{}, ErrCycle
+	}
+
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE accounts SET name = $1, code = $2, parent_id = $3 WHERE id = $4`,
 		a.Name, a.Code, a.ParentID, a.ID,
@@ -184,6 +193,54 @@ func (s *AccountStore) Update(ctx context.Context, a models.Account) (models.Acc
 		return models.Account{}, ErrNotFound
 	}
 	return a, nil
+}
+
+// wouldCreateCycle reports whether setting id's parent to parentID would
+// make id its own ancestor — directly (parentID == id) or through some
+// chain of parents (parentID is a descendant of id). It walks up from
+// parentID through the existing parent_id chain, which is only possible
+// if id turns up among its ancestors, since id can't be its own
+// descendant's descendant without already being an ancestor of parentID.
+func (s *AccountStore) wouldCreateCycle(ctx context.Context, id int64, parentID *int64) (bool, error) {
+	if parentID == nil {
+		return false, nil
+	}
+	if *parentID == id {
+		return true, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `SELECT id, parent_id FROM accounts`)
+	if err != nil {
+		return false, fmt.Errorf("query accounts: %w", err)
+	}
+	parentOf := make(map[int64]*int64)
+	for rows.Next() {
+		var accountID int64
+		var pid *int64
+		if err := rows.Scan(&accountID, &pid); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("scan account: %w", err)
+		}
+		parentOf[accountID] = pid
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate accounts: %w", err)
+	}
+	rows.Close()
+
+	current := parentID
+	visited := make(map[int64]bool)
+	for current != nil {
+		if *current == id {
+			return true, nil
+		}
+		if visited[*current] {
+			break // a pre-existing cycle elsewhere in the data; don't loop forever
+		}
+		visited[*current] = true
+		current = parentOf[*current]
+	}
+	return false, nil
 }
 
 // MoveUp and MoveDown are the two directions Move accepts.

@@ -106,6 +106,10 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
+	if errors.Is(err, store.ErrCycle) {
+		writeError(w, http.StatusBadRequest, "an account cannot be its own ancestor")
+		return
+	}
 	if err != nil {
 		if msg := pgConstraintMessage(err); msg != "" {
 			writeError(w, http.StatusBadRequest, msg)

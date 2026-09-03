@@ -50,10 +50,10 @@ type accountsModel struct {
 	// parentOptions is whichever accounts are currently offered as a
 	// parent choice, as an indented tree (see orderAccountsAsTree) so the
 	// dropdown can show each one's depth — m.rows when creating, or
-	// m.rows with the account being edited filtered out (see startEdit,
-	// accountsExcluding) — kept alongside parentPicker so
-	// selectedParentID can map its cursor back to an account ID
-	// regardless of which case built the dropdown.
+	// m.rows with the account being edited and all its descendants
+	// filtered out (see startEdit, accountsExcludingSubtree) — kept
+	// alongside parentPicker so selectedParentID can map its cursor back
+	// to an account ID regardless of which case built the dropdown.
 	parentOptions []accountTreeNode
 	parentPicker  table.Model // dropdown of "(none)" + parentOptions, for the parent field
 	inputs        []textinput.Model
@@ -503,13 +503,34 @@ func parentCursorFor(parentID *int64, options []accountTreeNode) int {
 	return 0
 }
 
-// accountsExcluding returns accounts with the one matching excludeID left
-// out, preserving order. Used to keep an account being edited out of its
-// own Parent dropdown — choosing itself would form a single-node cycle.
-func accountsExcluding(accounts []client.Account, excludeID int64) []client.Account {
+// accountsExcludingSubtree returns accounts with rootID and every one of
+// its descendants (transitively, via ParentID) left out, preserving
+// order. Used to keep an account being edited — and everything under it
+// — out of its own Parent dropdown: choosing itself would form a
+// single-node cycle, and choosing any descendant would form a longer one
+// (the API's AccountStore rejects both, but there's no reason to offer
+// either as an option in the first place).
+func accountsExcludingSubtree(accounts []client.Account, rootID int64) []client.Account {
+	excluded := map[int64]bool{rootID: true}
+	// Repeatedly sweep for newly-discovered descendants until a pass
+	// finds none, so this doesn't depend on parents appearing before
+	// their children in accounts.
+	for {
+		found := false
+		for _, a := range accounts {
+			if a.ParentID != nil && excluded[*a.ParentID] && !excluded[a.ID] {
+				excluded[a.ID] = true
+				found = true
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
 	out := make([]client.Account, 0, len(accounts))
 	for _, a := range accounts {
-		if a.ID != excludeID {
+		if !excluded[a.ID] {
 			out = append(out, a)
 		}
 	}
@@ -523,7 +544,7 @@ func (m *accountsModel) startEdit(account client.Account) {
 	m.mode = accountsModeCreate
 	id := account.ID
 	m.editingID = &id
-	m.parentOptions = orderAccountsAsTree(accountsExcluding(m.rows, account.ID))
+	m.parentOptions = orderAccountsAsTree(accountsExcludingSubtree(m.rows, account.ID))
 	m.parentPicker.SetRows(parentDropdownRows(m.parentOptions))
 	m.parentPicker.SetCursor(parentCursorFor(account.ParentID, m.parentOptions))
 	m.syncParentPickerHeight()
@@ -678,10 +699,11 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 		walk(r, 0)
 	}
 
-	// An account whose ancestors form a cycle (possible since nothing
-	// prevents setting an account's parent to one of its own
-	// descendants) is unreachable from any root; still show it rather
-	// than silently dropping it from the list.
+	// An account whose ancestors form a cycle is unreachable from any
+	// root; still show it rather than silently dropping it from the
+	// list. The API rejects any update that would create one (see
+	// AccountStore.wouldCreateCycle), so this should only matter for
+	// data that predates that check.
 	var leftover []client.Account
 	for _, a := range accounts {
 		if !visited[a.ID] {
