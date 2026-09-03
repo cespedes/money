@@ -12,6 +12,7 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"money/tui/internal/client"
 )
@@ -537,6 +538,23 @@ func TestOverlayCentered(t *testing.T) {
 	}
 	if !strings.Contains(got, "background content") {
 		t.Errorf("composited output should still contain the background, got:\n%s", got)
+	}
+}
+
+// TestConfirmDeletePrompt checks the delete-confirmation prompt (shared
+// by Accounts/Currencies/Transactions) includes a trailing cursor-like
+// block after the question, not just the bare "(y/n)" text — otherwise
+// it can read as a static status line rather than something waiting on
+// a keypress.
+func TestConfirmDeletePrompt(t *testing.T) {
+	got := confirmDeletePrompt("account")
+	if !strings.Contains(got, "Delete selected account? (y/n)") {
+		t.Errorf("confirmDeletePrompt(%q) = %q, want it to contain the question", "account", got)
+	}
+	question := errorStyle.Render("Delete selected account? (y/n)")
+	if lipgloss.Width(got) <= lipgloss.Width(question) {
+		t.Errorf("confirmDeletePrompt should render wider than the bare question (missing cursor block?): got width %d, question width %d",
+			lipgloss.Width(got), lipgloss.Width(question))
 	}
 }
 

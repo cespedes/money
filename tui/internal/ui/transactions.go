@@ -530,7 +530,7 @@ func (m transactionsModel) View() string {
 	case transactionsModeConfirmDelete:
 		b.WriteString(m.tbl.View())
 		b.WriteString("\n\n")
-		b.WriteString(errorStyle.Render("Delete selected transaction? (y/n)"))
+		b.WriteString(confirmDeletePrompt("transaction"))
 
 	default:
 		b.WriteString(m.tbl.View())

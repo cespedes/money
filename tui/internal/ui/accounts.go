@@ -806,7 +806,7 @@ func (m accountsModel) View() string {
 	case accountsModeConfirmDelete:
 		b.WriteString(m.table.View())
 		b.WriteString("\n\n")
-		b.WriteString(errorStyle.Render("Delete selected account? (y/n)"))
+		b.WriteString(confirmDeletePrompt("account"))
 	case accountsModeLedger:
 		b.WriteString(formLabelStyle.Render(fmt.Sprintf("Transactions for #%d %s", m.ledgerAccount.ID, m.ledgerAccount.Name)))
 		b.WriteString("\n\n")

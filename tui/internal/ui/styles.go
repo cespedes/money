@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -48,6 +49,14 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			Padding(0, 1)
+
+	// confirmCursorStyle renders a solid block, standing in for a
+	// terminal cursor on a "(y/n)" confirmation prompt — which, since
+	// it's plain rendered text rather than a focused text field, gets no
+	// real cursor of its own — so the prompt reads as something waiting
+	// on a keypress rather than a static status line (see
+	// confirmDeletePrompt).
+	confirmCursorStyle = lipgloss.NewStyle().Reverse(true)
 )
 
 // padOrTruncate left-aligns s within width (by rune count), for a pop-up
@@ -59,6 +68,13 @@ func padOrTruncate(s string, width int) string {
 		return string(r[:width])
 	}
 	return s + strings.Repeat(" ", width-len(r))
+}
+
+// confirmDeletePrompt renders "Delete selected <kind>? (y/n)" followed by
+// a cursor-like block (see confirmCursorStyle), shared by every tab's
+// delete confirmation.
+func confirmDeletePrompt(kind string) string {
+	return errorStyle.Render(fmt.Sprintf("Delete selected %s? (y/n)", kind)) + " " + confirmCursorStyle.Render(" ")
 }
 
 // columnHeader styles label as a fixed-width, table-style column header

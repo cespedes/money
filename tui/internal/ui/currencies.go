@@ -533,7 +533,7 @@ func (m currenciesModel) View() string {
 	case currenciesModeConfirmDelete:
 		b.WriteString(m.table.View())
 		b.WriteString("\n\n")
-		b.WriteString(errorStyle.Render("Delete selected currency? (y/n)"))
+		b.WriteString(confirmDeletePrompt("currency"))
 	default:
 		// currenciesModeCreate shows its own pop-up (see createPopup),
 		// composited over this same list view by App.View.
