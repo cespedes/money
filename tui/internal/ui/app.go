@@ -163,7 +163,7 @@ func (m App) footer() string {
 		}
 	case tabCurrencies:
 		if m.currencies.mode == currenciesModeCreate {
-			return "tab/←/→: switch field  •  ↑/↓: change value  •  enter: create  •  esc: cancel"
+			return "tab/←/→: switch field  •  enter: create  •  esc: cancel"
 		}
 	}
 	if m.currentEditing() {

@@ -20,29 +20,22 @@ const (
 	currenciesModeConfirmDelete
 )
 
-// currencyFocus identifies which of the "new currency" form's seven
+// currencyFocus identifies which of the "new currency" form's three
 // fields currently has focus.
 type currencyFocus int
 
 const (
 	focusCurrencyName currencyFocus = iota
-	focusCurrencySymbolBefore
-	focusCurrencySymbolSpace
-	focusCurrencyDecimalPlaces
-	focusCurrencyThousandsSep
-	focusCurrencyDecimalSep
+	focusCurrencyFormat
 	focusCurrencyISIN
 	numCurrencyFocusFields
 )
 
 const (
 	fieldCurrencyName = iota
-	fieldCurrencyThousandsSep
-	fieldCurrencyDecimalSep
+	fieldCurrencyFormat
 	fieldCurrencyISIN
 )
-
-const maxCurrencyDecimalPlaces = 10
 
 type currenciesModel struct {
 	client *client.Client
@@ -53,20 +46,14 @@ type currenciesModel struct {
 	status string
 	err    string
 
-	createFocus   currencyFocus
-	symbolBefore  bool
-	symbolSpace   bool
-	decimalPlaces int
-	inputs        []textinput.Model // [name, thousandsSep, decimalSep, isin]
+	createFocus currencyFocus
+	inputs      []textinput.Model // [name, format, isin]
 }
 
 func newCurrenciesModel(c *client.Client) currenciesModel {
 	columns := []table.Column{
-		{Title: "ID", Width: 6},
-		{Title: "Name", Width: 20},
-		{Title: "Position", Width: 10},
-		{Title: "Decimals", Width: 10},
-		{Title: "ISIN", Width: 14},
+		{Title: "Name", Width: 24},
+		{Title: "Format", Width: 20},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -79,15 +66,10 @@ func newCurrenciesModel(c *client.Client) currenciesModel {
 	name.Prompt = ""
 	name.SetWidth(createFieldWidth)
 
-	thousandsSep := textinput.New()
-	thousandsSep.Placeholder = "optional, e.g. ,"
-	thousandsSep.Prompt = ""
-	thousandsSep.SetWidth(createFieldWidth)
-
-	decimalSep := textinput.New()
-	decimalSep.Placeholder = "e.g. ."
-	decimalSep.Prompt = ""
-	decimalSep.SetWidth(createFieldWidth)
+	format := textinput.New()
+	format.Placeholder = `e.g. "$1,234.00"`
+	format.Prompt = ""
+	format.SetWidth(createFieldWidth)
 
 	isin := textinput.New()
 	isin.Placeholder = "optional"
@@ -97,7 +79,7 @@ func newCurrenciesModel(c *client.Client) currenciesModel {
 	return currenciesModel{
 		client: c,
 		table:  t,
-		inputs: []textinput.Model{name, thousandsSep, decimalSep, isin},
+		inputs: []textinput.Model{name, format, isin},
 	}
 }
 
@@ -177,9 +159,6 @@ func (m currenciesModel) updateList(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 		return m, m.loadCurrencies
 	case "n":
 		m.mode = currenciesModeCreate
-		m.symbolBefore = true
-		m.symbolSpace = false
-		m.decimalPlaces = 2
 		for i := range m.inputs {
 			m.inputs[i].SetValue("")
 		}
@@ -198,12 +177,10 @@ func (m currenciesModel) updateList(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 	return m, cmd
 }
 
-// updateCreate handles the "new currency" form: seven fields laid out as
-// a two-row grid (see createPopup), navigated the same way as the "new
-// account" form — tab/shift+tab or left/right move focus, since arrow
-// keys always change focus rather than a text cursor. While a toggle
-// field (Position, Space) or the numeric Decimals field has focus,
-// up/down change its value instead.
+// updateCreate handles the "new currency" form: Name, Format, and ISIN,
+// navigated the same way as the "new account" form — tab/shift+tab or
+// left/right move focus. Format's value isn't validated here as the user
+// types; that happens once, on submit (see submitCreate/parseCurrencyFormat).
 func (m currenciesModel) updateCreate(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -220,47 +197,21 @@ func (m currenciesModel) updateCreate(msg tea.KeyMsg) (currenciesModel, tea.Cmd)
 		return m, nil
 	}
 
-	switch m.createFocus {
-	case focusCurrencySymbolBefore:
-		if msg.String() == "up" || msg.String() == "down" {
-			m.symbolBefore = !m.symbolBefore
-		}
-		return m, nil
-	case focusCurrencySymbolSpace:
-		if msg.String() == "up" || msg.String() == "down" {
-			m.symbolSpace = !m.symbolSpace
-		}
-		return m, nil
-	case focusCurrencyDecimalPlaces:
-		switch msg.String() {
-		case "up":
-			if m.decimalPlaces < maxCurrencyDecimalPlaces {
-				m.decimalPlaces++
-			}
-		case "down":
-			if m.decimalPlaces > 0 {
-				m.decimalPlaces--
-			}
-		}
-		return m, nil
-	case focusCurrencyName:
-		var cmd tea.Cmd
-		m.inputs[fieldCurrencyName], cmd = m.inputs[fieldCurrencyName].Update(msg)
-		return m, cmd
-	case focusCurrencyThousandsSep:
-		var cmd tea.Cmd
-		m.inputs[fieldCurrencyThousandsSep], cmd = m.inputs[fieldCurrencyThousandsSep].Update(msg)
-		return m, cmd
-	case focusCurrencyDecimalSep:
-		var cmd tea.Cmd
-		m.inputs[fieldCurrencyDecimalSep], cmd = m.inputs[fieldCurrencyDecimalSep].Update(msg)
-		return m, cmd
+	i := fieldForFocus(m.createFocus)
+	var cmd tea.Cmd
+	m.inputs[i], cmd = m.inputs[i].Update(msg)
+	return m, cmd
+}
+
+func fieldForFocus(f currencyFocus) int {
+	switch f {
+	case focusCurrencyFormat:
+		return fieldCurrencyFormat
 	case focusCurrencyISIN:
-		var cmd tea.Cmd
-		m.inputs[fieldCurrencyISIN], cmd = m.inputs[fieldCurrencyISIN].Update(msg)
-		return m, cmd
+		return fieldCurrencyISIN
+	default:
+		return fieldCurrencyName
 	}
-	return m, nil
 }
 
 func (m *currenciesModel) setCreateFocus(f currencyFocus) {
@@ -268,16 +219,7 @@ func (m *currenciesModel) setCreateFocus(f currencyFocus) {
 	for i := range m.inputs {
 		m.inputs[i].Blur()
 	}
-	switch f {
-	case focusCurrencyName:
-		m.inputs[fieldCurrencyName].Focus()
-	case focusCurrencyThousandsSep:
-		m.inputs[fieldCurrencyThousandsSep].Focus()
-	case focusCurrencyDecimalSep:
-		m.inputs[fieldCurrencyDecimalSep].Focus()
-	case focusCurrencyISIN:
-		m.inputs[fieldCurrencyISIN].Focus()
-	}
+	m.inputs[fieldForFocus(f)].Focus()
 }
 
 func (m currenciesModel) submitCreate() (currenciesModel, tea.Cmd) {
@@ -287,13 +229,22 @@ func (m currenciesModel) submitCreate() (currenciesModel, tea.Cmd) {
 		m.setCreateFocus(focusCurrencyName)
 		return m, nil
 	}
+
+	format := strings.TrimSpace(m.inputs[fieldCurrencyFormat].Value())
+	before, space, thousandsSep, decimalSep, decimalPlaces, ok := parseCurrencyFormat(name, format)
+	if !ok {
+		m.err = `format must start or end with the name, e.g. "$1,234.00" or "1.234,00 EUR"`
+		m.setCreateFocus(focusCurrencyFormat)
+		return m, nil
+	}
+
 	cur := client.Currency{
 		Name:               name,
-		SymbolBefore:       m.symbolBefore,
-		SymbolSpace:        m.symbolSpace,
-		ThousandsSeparator: m.inputs[fieldCurrencyThousandsSep].Value(),
-		DecimalSeparator:   m.inputs[fieldCurrencyDecimalSep].Value(),
-		DecimalPlaces:      m.decimalPlaces,
+		SymbolBefore:       before,
+		SymbolSpace:        space,
+		ThousandsSeparator: thousandsSep,
+		DecimalSeparator:   decimalSep,
+		DecimalPlaces:      decimalPlaces,
 	}
 	if isin := strings.TrimSpace(m.inputs[fieldCurrencyISIN].Value()); isin != "" {
 		cur.ISIN = &isin
@@ -331,19 +282,23 @@ func (m currenciesModel) updateConfirmDelete(msg tea.KeyMsg) (currenciesModel, t
 func currenciesToRows(currencies []client.Currency) []table.Row {
 	rows := make([]table.Row, 0, len(currencies))
 	for _, c := range currencies {
-		isin := ""
-		if c.ISIN != nil {
-			isin = *c.ISIN
-		}
-		rows = append(rows, table.Row{
-			strconv.FormatInt(c.ID, 10),
-			c.Name,
-			symbolPositionText(c.SymbolBefore),
-			strconv.Itoa(c.DecimalPlaces),
-			isin,
-		})
+		rows = append(rows, table.Row{c.Name, c.Format(exampleAmount(c.DecimalPlaces))})
 	}
 	return rows
+}
+
+// exampleAmount is the minor-unit amount representing a fixed test
+// quantity of 1234 whole units of a currency with the given number of
+// decimal places (e.g. 2 decimal places -> 123400 cents). Used both to
+// render a currency's Format example in the currencies list and, in
+// reverse, to parse one back out of a "new currency" form's Format field
+// (see parseCurrencyFormat).
+func exampleAmount(decimalPlaces int) int64 {
+	scale := int64(1)
+	for range decimalPlaces {
+		scale *= 10
+	}
+	return 1234 * scale
 }
 
 // currencyByID indexes a list of currencies for O(1) lookup by ID, used
@@ -369,69 +324,151 @@ func formatAmount(amount int64, currencies currencyByID, currencyID int64) strin
 	return strconv.FormatInt(amount, 10) + " (?)"
 }
 
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
-func symbolPositionText(before bool) string {
-	if before {
-		return "before"
-	}
-	return "after"
-}
-
 // createPopup renders the "new currency" form as a bordered, table-shaped
-// pop-up: two rows of fixed-width fields (Name/Position/Space/Decimals,
-// then Thousands/Decimal separators/ISIN), each with its column header
-// above it and the focused one highlighted. It's meant to be composited
-// over the currencies list via overlayCentered, not shown in place of it.
+// pop-up: Name, Format, and ISIN as fixed-width columns with their names
+// above, the focused one highlighted. It's meant to be composited over
+// the currencies list via overlayCentered, not shown in place of it.
 func (m currenciesModel) createPopup() string {
-	row1Labels := []string{"Name", "Position", "Space", "Decimals"}
-	row1Focus := []currencyFocus{focusCurrencyName, focusCurrencySymbolBefore, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces}
-	row1Values := []string{
+	labels := []string{"Name", "Format", "ISIN"}
+	focuses := []currencyFocus{focusCurrencyName, focusCurrencyFormat, focusCurrencyISIN}
+	values := []string{
 		m.inputs[fieldCurrencyName].View(),
-		padOrTruncate(symbolPositionText(m.symbolBefore), createFieldWidth),
-		padOrTruncate(yesNo(m.symbolSpace), createFieldWidth),
-		padOrTruncate(strconv.Itoa(m.decimalPlaces), createFieldWidth),
-	}
-	// Position/Space/Decimals are plain text (not a textinput with its
-	// own focus rendering), so highlight the focused one explicitly. Name
-	// (index 0) needs no such handling: it's a textinput.
-	for i := 1; i < len(row1Focus); i++ {
-		if row1Focus[i] == m.createFocus {
-			row1Values[i] = focusedFieldStyle.Render(row1Values[i])
-		}
-	}
-
-	row2Labels := []string{"Thousands", "Decimal Sep", "ISIN"}
-	row2Focus := []currencyFocus{focusCurrencyThousandsSep, focusCurrencyDecimalSep, focusCurrencyISIN}
-	row2Values := []string{
-		m.inputs[fieldCurrencyThousandsSep].View(),
-		m.inputs[fieldCurrencyDecimalSep].View(),
+		m.inputs[fieldCurrencyFormat].View(),
 		m.inputs[fieldCurrencyISIN].View(),
 	}
 
-	headers1 := make([]string, len(row1Labels))
-	for i, l := range row1Labels {
-		headers1[i] = columnHeader(l, row1Focus[i] == m.createFocus)
-	}
-	headers2 := make([]string, len(row2Labels))
-	for i, l := range row2Labels {
-		headers2[i] = columnHeader(l, row2Focus[i] == m.createFocus)
+	headers := make([]string, len(labels))
+	for i, l := range labels {
+		headers[i] = columnHeader(l, focuses[i] == m.createFocus)
 	}
 
 	content := formLabelStyle.Render("New currency") + "\n\n" +
-		strings.Join(headers1, "  ") + "\n" +
-		strings.Join(row1Values, "  ") + "\n\n" +
-		strings.Join(headers2, "  ") + "\n" +
-		strings.Join(row2Values, "  ")
+		strings.Join(headers, "  ") + "\n" +
+		strings.Join(values, "  ")
 	if m.err != "" {
 		content += "\n\n" + errorStyle.Render("Error: "+m.err)
 	}
 	return popupStyle.Render(content)
+}
+
+// parseCurrencyFormat derives a currency's SymbolBefore/SymbolSpace/
+// ThousandsSeparator/DecimalSeparator/DecimalPlaces from a single example
+// of how it renders a fixed test quantity of 1234 whole units, e.g.
+// "$1,234.00" or "1.234,00 EUR" or "1234 PTS". name must appear at
+// exactly the start or the end of format (optionally separated from the
+// number by a single space); the rest must be exactly "1234", optionally
+// split by a thousands separator into "1"+"234" and/or followed by a
+// decimal separator and one or more decimal digits.
+func parseCurrencyFormat(name, format string) (before, space bool, thousandsSep, decimalSep string, decimalPlaces int, ok bool) {
+	if name == "" {
+		return false, false, "", "", 0, false
+	}
+	if strings.HasPrefix(format, name) {
+		if sp, num, valid := splitAfterName(format[len(name):]); valid {
+			if ts, ds, dp, numOK := parseFormatNumber(num); numOK {
+				return true, sp, ts, ds, dp, true
+			}
+		}
+	}
+	if strings.HasSuffix(format, name) {
+		if sp, num, valid := splitBeforeName(format[:len(format)-len(name)]); valid {
+			if ts, ds, dp, numOK := parseFormatNumber(num); numOK {
+				return false, sp, ts, ds, dp, true
+			}
+		}
+	}
+	return false, false, "", "", 0, false
+}
+
+// splitAfterName splits what follows the name in a "before" format (e.g.
+// "1,234.00" out of "$1,234.00") into whether a space separates them and
+// the remaining number part.
+func splitAfterName(rest string) (space bool, numPart string, ok bool) {
+	if rest == "" {
+		return false, "", false
+	}
+	if rest[0] == ' ' {
+		if len(rest) > 1 && isASCIIDigit(rest[1]) {
+			return true, rest[1:], true
+		}
+		return false, "", false
+	}
+	if isASCIIDigit(rest[0]) {
+		return false, rest, true
+	}
+	return false, "", false
+}
+
+// splitBeforeName is splitAfterName's mirror for an "after" format (e.g.
+// "1.234,00" out of "1.234,00 EUR").
+func splitBeforeName(rest string) (space bool, numPart string, ok bool) {
+	if rest == "" {
+		return false, "", false
+	}
+	last := rest[len(rest)-1]
+	if last == ' ' {
+		if len(rest) > 1 && isASCIIDigit(rest[len(rest)-2]) {
+			return true, rest[:len(rest)-1], true
+		}
+		return false, "", false
+	}
+	if isASCIIDigit(last) {
+		return false, rest, true
+	}
+	return false, "", false
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+// parseFormatNumber parses numPart, the number portion of a format
+// example, against the fixed test quantity "1234". Since that quantity
+// always has exactly four digits, a thousands separator (if any) can only
+// split it as "1"+"234", so this fully determines thousandsSep, decimalSep,
+// and decimalPlaces without any ambiguity between the two separators.
+func parseFormatNumber(numPart string) (thousandsSep, decimalSep string, decimalPlaces int, ok bool) {
+	type run struct {
+		digits bool
+		s      string
+	}
+	var runs []run
+	for i := 0; i < len(numPart); {
+		if isASCIIDigit(numPart[i]) {
+			j := i
+			for j < len(numPart) && isASCIIDigit(numPart[j]) {
+				j++
+			}
+			runs = append(runs, run{digits: true, s: numPart[i:j]})
+			i = j
+			continue
+		}
+		runs = append(runs, run{digits: false, s: numPart[i : i+1]})
+		i++
+	}
+
+	switch len(runs) {
+	case 1:
+		if runs[0].digits && runs[0].s == "1234" {
+			return "", "", 0, true
+		}
+	case 3:
+		if runs[0].digits && !runs[1].digits && runs[2].digits {
+			if runs[0].s == "1" && runs[2].s == "234" {
+				return runs[1].s, "", 0, true
+			}
+			if runs[0].s == "1234" {
+				return "", runs[1].s, len(runs[2].s), true
+			}
+		}
+	case 5:
+		if runs[0].digits && !runs[1].digits && runs[2].digits && !runs[3].digits && runs[4].digits {
+			if runs[0].s == "1" && runs[2].s == "234" {
+				return runs[1].s, runs[3].s, len(runs[4].s), true
+			}
+		}
+	}
+	return "", "", 0, false
 }
 
 func (m currenciesModel) View() string {

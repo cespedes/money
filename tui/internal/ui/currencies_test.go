@@ -28,19 +28,69 @@ func typeStringC(m currenciesModel, s string) currenciesModel {
 }
 
 func TestCurrenciesToRows(t *testing.T) {
-	isin := "US0000000001"
 	rows := currenciesToRows([]client.Currency{
-		{ID: 1, Name: "US Dollar", SymbolBefore: true, DecimalPlaces: 2, ISIN: &isin},
-		{ID: 2, Name: "Euro", SymbolBefore: false, DecimalPlaces: 2},
+		{ID: 1, Name: "$", SymbolBefore: true, ThousandsSeparator: ",", DecimalSeparator: ".", DecimalPlaces: 2},
+		{ID: 2, Name: "EUR", SymbolBefore: false, SymbolSpace: true, ThousandsSeparator: ".", DecimalSeparator: ",", DecimalPlaces: 2},
+		{ID: 3, Name: "PTS", SymbolBefore: false, SymbolSpace: true, DecimalPlaces: 0},
 	})
-	if len(rows) != 2 {
-		t.Fatalf("got %d rows, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if got, want := rows[0], (table.Row{"1", "US Dollar", "before", "2", isin}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[0], (table.Row{"$", "$1,234.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"2", "Euro", "after", "2", ""}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"EUR", "1.234,00 EUR"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
+	}
+	if got, want := rows[2], (table.Row{"PTS", "1234 PTS"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("row 2 = %v, want %v", got, want)
+	}
+}
+
+func TestParseCurrencyFormat(t *testing.T) {
+	cases := []struct {
+		name, format               string
+		wantBefore, wantSpace      bool
+		wantThousands, wantDecimal string
+		wantDecimalPlaces          int
+	}{
+		{name: "$", format: "$1,234.00", wantBefore: true, wantSpace: false, wantThousands: ",", wantDecimal: ".", wantDecimalPlaces: 2},
+		{name: "EUR", format: "1.234,00 EUR", wantBefore: false, wantSpace: true, wantThousands: ".", wantDecimal: ",", wantDecimalPlaces: 2},
+		{name: "PTS", format: "1234 PTS", wantBefore: false, wantSpace: true, wantThousands: "", wantDecimal: "", wantDecimalPlaces: 0},
+		{name: "USD", format: "USD1234", wantBefore: true, wantSpace: false, wantThousands: "", wantDecimal: "", wantDecimalPlaces: 0},
+		{name: "USD", format: "1234.000 USD", wantBefore: false, wantSpace: true, wantThousands: "", wantDecimal: ".", wantDecimalPlaces: 3},
+		{name: "USD", format: "USD 1,234", wantBefore: true, wantSpace: true, wantThousands: ",", wantDecimal: "", wantDecimalPlaces: 0},
+	}
+	for _, c := range cases {
+		before, space, thousands, decimal, decimalPlaces, ok := parseCurrencyFormat(c.name, c.format)
+		if !ok {
+			t.Errorf("parseCurrencyFormat(%q, %q): got ok=false, want true", c.name, c.format)
+			continue
+		}
+		if before != c.wantBefore || space != c.wantSpace || thousands != c.wantThousands ||
+			decimal != c.wantDecimal || decimalPlaces != c.wantDecimalPlaces {
+			t.Errorf("parseCurrencyFormat(%q, %q) = (before=%v space=%v thousands=%q decimal=%q places=%d), want (before=%v space=%v thousands=%q decimal=%q places=%d)",
+				c.name, c.format, before, space, thousands, decimal, decimalPlaces,
+				c.wantBefore, c.wantSpace, c.wantThousands, c.wantDecimal, c.wantDecimalPlaces)
+		}
+	}
+}
+
+func TestParseCurrencyFormat_Invalid(t *testing.T) {
+	cases := []struct{ name, format string }{
+		{"$", "1,234.00"},      // name missing entirely
+		{"$", "$1234 "},        // dangling space, not part of any recognized pattern
+		{"$", "$  1234"},       // double space after name
+		{"$", "$123"},          // wrong quantity
+		{"$", "$12345"},        // wrong quantity
+		{"EUR", "1.23,00 EUR"}, // thousands group isn't "234"
+		{"EUR", "12,34 EUR"},   // wrong thousands grouping (2+2, not 1+3)
+		{"", "$1234"},          // empty name
+	}
+	for _, c := range cases {
+		if _, _, _, _, _, ok := parseCurrencyFormat(c.name, c.format); ok {
+			t.Errorf("parseCurrencyFormat(%q, %q): got ok=true, want false", c.name, c.format)
+		}
 	}
 }
 
@@ -60,7 +110,7 @@ func TestCurrenciesModel_LoadCurrencies(t *testing.T) {
 	}
 }
 
-func TestCurrenciesModel_NKeyEntersCreateModeWithDefaults(t *testing.T) {
+func TestCurrenciesModel_NKeyEntersCreateMode(t *testing.T) {
 	m := newTestCurrenciesModel(t, nil)
 	m, _ = m.Update(keyPress("n"))
 
@@ -69,9 +119,6 @@ func TestCurrenciesModel_NKeyEntersCreateModeWithDefaults(t *testing.T) {
 	}
 	if m.createFocus != focusCurrencyName {
 		t.Fatalf("createFocus = %v, want focusCurrencyName", m.createFocus)
-	}
-	if !m.symbolBefore || m.symbolSpace || m.decimalPlaces != 2 {
-		t.Fatalf("defaults = before=%v space=%v decimals=%d, want true/false/2", m.symbolBefore, m.symbolSpace, m.decimalPlaces)
 	}
 	if !m.Editing() {
 		t.Fatal("Editing() should be true in create mode")
@@ -82,10 +129,7 @@ func TestCurrenciesModel_CreateFocusCycles(t *testing.T) {
 	m := newTestCurrenciesModel(t, nil)
 	m, _ = m.Update(keyPress("n"))
 
-	order := []currencyFocus{
-		focusCurrencyName, focusCurrencySymbolBefore, focusCurrencySymbolSpace, focusCurrencyDecimalPlaces,
-		focusCurrencyThousandsSep, focusCurrencyDecimalSep, focusCurrencyISIN, focusCurrencyName,
-	}
+	order := []currencyFocus{focusCurrencyName, focusCurrencyFormat, focusCurrencyISIN, focusCurrencyName}
 	for i, want := range order[1:] {
 		m, _ = m.Update(keyPress("tab"))
 		if m.createFocus != want {
@@ -98,60 +142,12 @@ func TestCurrenciesModel_CreateFocusCycles(t *testing.T) {
 		t.Fatalf("after shift+tab: createFocus = %v, want focusCurrencyISIN", m.createFocus)
 	}
 	m, _ = m.Update(keyPress("left"))
-	if m.createFocus != focusCurrencyDecimalSep {
-		t.Fatalf("after left: createFocus = %v, want focusCurrencyDecimalSep", m.createFocus)
+	if m.createFocus != focusCurrencyFormat {
+		t.Fatalf("after left: createFocus = %v, want focusCurrencyFormat", m.createFocus)
 	}
 	m, _ = m.Update(keyPress("right"))
 	if m.createFocus != focusCurrencyISIN {
 		t.Fatalf("after right: createFocus = %v, want focusCurrencyISIN", m.createFocus)
-	}
-}
-
-func TestCurrenciesModel_ToggleFields(t *testing.T) {
-	m := newTestCurrenciesModel(t, nil)
-	m, _ = m.Update(keyPress("n")) // before=true, space=false, decimals=2
-
-	m, _ = m.Update(keyPress("tab")) // -> Position
-	m, _ = m.Update(keyPress("up"))
-	if m.symbolBefore {
-		t.Fatal("symbolBefore after toggle should be false")
-	}
-	m, _ = m.Update(keyPress("down"))
-	if !m.symbolBefore {
-		t.Fatal("symbolBefore after second toggle should be true")
-	}
-
-	m, _ = m.Update(keyPress("tab")) // -> Space
-	m, _ = m.Update(keyPress("up"))
-	if !m.symbolSpace {
-		t.Fatal("symbolSpace should be true after toggling")
-	}
-
-	m, _ = m.Update(keyPress("tab")) // -> Decimals
-	m, _ = m.Update(keyPress("up"))
-	m, _ = m.Update(keyPress("up"))
-	if m.decimalPlaces != 4 {
-		t.Fatalf("decimalPlaces = %d, want 4", m.decimalPlaces)
-	}
-	m, _ = m.Update(keyPress("down"))
-	if m.decimalPlaces != 3 {
-		t.Fatalf("decimalPlaces = %d, want 3", m.decimalPlaces)
-	}
-
-	// Decimals is clamped at 0 (can't go negative).
-	for range 10 {
-		m, _ = m.Update(keyPress("down"))
-	}
-	if m.decimalPlaces != 0 {
-		t.Fatalf("decimalPlaces should clamp at 0, got %d", m.decimalPlaces)
-	}
-
-	// ... and at maxCurrencyDecimalPlaces.
-	for range maxCurrencyDecimalPlaces + 5 {
-		m, _ = m.Update(keyPress("up"))
-	}
-	if m.decimalPlaces != maxCurrencyDecimalPlaces {
-		t.Fatalf("decimalPlaces should clamp at %d, got %d", maxCurrencyDecimalPlaces, m.decimalPlaces)
 	}
 }
 
@@ -177,6 +173,31 @@ func TestCurrenciesModel_CreateValidation(t *testing.T) {
 	}
 }
 
+func TestCurrenciesModel_CreateValidation_InvalidFormat(t *testing.T) {
+	called := false
+	m := newTestCurrenciesModel(t, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	m, _ = m.Update(keyPress("n"))
+	m = typeStringC(m, "USD")
+	m, _ = m.Update(keyPress("tab")) // -> Format
+	m = typeStringC(m, "nonsense")
+
+	m, cmd := m.Update(keyPress("enter"))
+	if m.err == "" {
+		t.Fatal("expected an error for an unparseable format")
+	}
+	if cmd != nil {
+		cmd()
+	}
+	if called {
+		t.Fatal("the API should not have been called for an invalid submission")
+	}
+	if m.createFocus != focusCurrencyFormat {
+		t.Fatalf("createFocus = %v, want focusCurrencyFormat", m.createFocus)
+	}
+}
+
 func TestCurrenciesModel_CreateSubmits(t *testing.T) {
 	var gotBody client.Currency
 	m := newTestCurrenciesModel(t, func(w http.ResponseWriter, r *http.Request) {
@@ -185,19 +206,11 @@ func TestCurrenciesModel_CreateSubmits(t *testing.T) {
 		json.NewEncoder(w).Encode(client.Currency{ID: 1, Name: gotBody.Name})
 	})
 	m, _ = m.Update(keyPress("n"))
-	m = typeStringC(m, "USD")
-	m, _ = m.Update(keyPress("tab")) // -> Position
-	m, _ = m.Update(keyPress("up"))  // "after"
-	m, _ = m.Update(keyPress("tab")) // -> Space
-	m, _ = m.Update(keyPress("up"))  // true
-	m, _ = m.Update(keyPress("tab")) // -> Decimals
-	m, _ = m.Update(keyPress("up"))  // 3
-	m, _ = m.Update(keyPress("tab")) // -> Thousands
-	m = typeStringC(m, ",")
-	m, _ = m.Update(keyPress("tab")) // -> Decimal sep
-	m = typeStringC(m, ".")
+	m = typeStringC(m, "EUR")
+	m, _ = m.Update(keyPress("tab")) // -> Format
+	m = typeStringC(m, "1.234,00 EUR")
 	m, _ = m.Update(keyPress("tab")) // -> ISIN
-	m = typeStringC(m, "US0000000001")
+	m = typeStringC(m, "EU0000000001")
 
 	m, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
@@ -209,12 +222,12 @@ func TestCurrenciesModel_CreateSubmits(t *testing.T) {
 		t.Fatalf("got %#v", msg)
 	}
 
-	if gotBody.Name != "USD" || gotBody.SymbolBefore || !gotBody.SymbolSpace ||
-		gotBody.DecimalPlaces != 3 || gotBody.ThousandsSeparator != "," || gotBody.DecimalSeparator != "." {
+	if gotBody.Name != "EUR" || gotBody.SymbolBefore || !gotBody.SymbolSpace ||
+		gotBody.DecimalPlaces != 2 || gotBody.ThousandsSeparator != "." || gotBody.DecimalSeparator != "," {
 		t.Fatalf("API received %+v", gotBody)
 	}
-	if gotBody.ISIN == nil || *gotBody.ISIN != "US0000000001" {
-		t.Fatalf("API received ISIN %v, want US0000000001", gotBody.ISIN)
+	if gotBody.ISIN == nil || *gotBody.ISIN != "EU0000000001" {
+		t.Fatalf("API received ISIN %v, want EU0000000001", gotBody.ISIN)
 	}
 
 	m, cmd = m.Update(mutated)
@@ -234,7 +247,9 @@ func TestCurrenciesModel_CreateOmitsBlankISIN(t *testing.T) {
 		json.NewEncoder(w).Encode(client.Currency{ID: 1, Name: gotBody.Name})
 	})
 	m, _ = m.Update(keyPress("n"))
-	m = typeStringC(m, "USD")
+	m = typeStringC(m, "PTS")
+	m, _ = m.Update(keyPress("tab")) // -> Format
+	m = typeStringC(m, "1234 PTS")
 
 	_, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
@@ -312,9 +327,11 @@ func TestCurrenciesModel_CreatePopup(t *testing.T) {
 	m.table.SetRows(currenciesToRows(m.rows))
 	m, _ = m.Update(keyPress("n"))
 	m = typeStringC(m, "EUR")
+	m, _ = m.Update(keyPress("tab")) // -> Format
+	m = typeStringC(m, "1.234,00 EUR")
 
 	popup := m.createPopup()
-	for _, want := range []string{"New currency", "Name", "Position", "Space", "Decimals", "Thousands", "Decimal Sep", "ISIN", "EUR", "before", "no", "2"} {
+	for _, want := range []string{"New currency", "Name", "Format", "ISIN", "EUR", "1.234,00 EUR"} {
 		if !strings.Contains(popup, want) {
 			t.Errorf("popup should contain %q, got:\n%s", want, popup)
 		}
@@ -341,8 +358,11 @@ func TestFormatAmount(t *testing.T) {
 	}
 }
 
-func TestYesNo(t *testing.T) {
-	if yesNo(true) != "yes" || yesNo(false) != "no" {
-		t.Errorf("yesNo(true)=%q yesNo(false)=%q", yesNo(true), yesNo(false))
+func TestExampleAmount(t *testing.T) {
+	if got := exampleAmount(0); got != 1234 {
+		t.Errorf("exampleAmount(0) = %d, want 1234", got)
+	}
+	if got := exampleAmount(2); got != 123400 {
+		t.Errorf("exampleAmount(2) = %d, want 123400", got)
 	}
 }

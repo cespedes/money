@@ -191,11 +191,19 @@ has focus, a dropdown lists "(none)" and every existing account — all of
 them at once, or as many as fit in the window — and `↑`/`↓` pick one.
 Name is required, code is optional.
 
-Creating a currency opens a similar pop-up, with all seven fields (Name,
-Position, Space, Decimals, Thousands separator, Decimal separator, ISIN)
-laid out as a two-row grid; `Tab`/`Shift+Tab`/`←`/`→` move between them,
-and `↑`/`↓` change the value of whichever of Position/Space/Decimals has
-focus (the others are free text). Only Name is required.
+Creating a currency opens a similar pop-up with three fields: Name, Format,
+and ISIN. Format is a single example of how the currency renders a fixed
+test quantity of 1234 whole units — e.g. `$1,234.00`, `1.234,00 EUR`, or
+`1234 PTS` — from which the currency's `symbol_before`, `symbol_space`,
+`thousands_separator`, `decimal_separator`, and `decimal_places` are all
+derived on submit; Name must appear at the very start or end of it
+(optionally set off by a single space) and the rest must match "1234"
+exactly, split by an optional thousands separator into "1"+"234" and/or
+followed by a decimal separator and one or more decimal digits, or the
+submission is rejected with an error. Only Name is required. The
+currencies list itself shows just Name and that same computed Format
+(applied to the currency's actual stored rules), rather than the
+individual fields.
 
 When creating a transaction, the TUI walks through description, timestamp,
 and then repeatedly asks for an account, a currency (picked from a
