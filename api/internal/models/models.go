@@ -53,6 +53,22 @@ type Currency struct {
 	ISIN *string `json:"isin,omitempty"`
 }
 
+// CurrencyPrice is a directly-observed exchange rate: one unit of
+// BaseCurrencyID was worth Rate units of QuoteCurrencyID, as of AsOf.
+// Unlike a transaction's Amount, Rate is an approximate market price —
+// not an integer minor-unit quantity tied to either currency's
+// DecimalPlaces — so it's a plain float64. See
+// CurrencyPriceStore.RateAt for how observations are combined (linear
+// interpolation over time, and chained through intermediate currencies)
+// to answer a query that doesn't exactly match a stored one.
+type CurrencyPrice struct {
+	ID              int64     `json:"id"`
+	BaseCurrencyID  int64     `json:"base_currency_id"`
+	QuoteCurrencyID int64     `json:"quote_currency_id"`
+	Rate            float64   `json:"rate"`
+	AsOf            time.Time `json:"as_of"`
+}
+
 // Entry is one leg of a transaction: a signed amount, in a specific
 // currency, posted to an account. A positive amount is a debit, a
 // negative amount is a credit.

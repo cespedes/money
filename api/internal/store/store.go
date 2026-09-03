@@ -19,16 +19,24 @@ var ErrUnbalanced = errors.New("transaction entries do not sum to zero")
 // account its own ancestor (directly, or through some chain of parents).
 var ErrCycle = errors.New("account cannot be its own ancestor")
 
+// ErrNoRate is returned by CurrencyPriceStore.RateAt when no exchange
+// rate can be determined between two currencies — directly, by
+// interpolating over time, or by chaining through any intermediate
+// currency — from the currency_prices recorded so far.
+var ErrNoRate = errors.New("no exchange rate available")
+
 type Store struct {
-	Accounts     *AccountStore
-	Transactions *TransactionStore
-	Currencies   *CurrencyStore
+	Accounts       *AccountStore
+	Transactions   *TransactionStore
+	Currencies     *CurrencyStore
+	CurrencyPrices *CurrencyPriceStore
 }
 
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{
-		Accounts:     NewAccountStore(pool),
-		Transactions: NewTransactionStore(pool),
-		Currencies:   NewCurrencyStore(pool),
+		Accounts:       NewAccountStore(pool),
+		Transactions:   NewTransactionStore(pool),
+		Currencies:     NewCurrencyStore(pool),
+		CurrencyPrices: NewCurrencyPriceStore(pool),
 	}
 }

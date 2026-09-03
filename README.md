@@ -34,11 +34,20 @@ A small double-entry accounting application, made of three parts:
   summed together, so a single transaction can freely mix currencies as
   long as each one balances on its own. A positive amount is a debit, a
   negative amount is a credit.
+- **Currency prices** record a directly-observed exchange rate: one unit
+  of `base_currency_id` was worth `rate` units of `quote_currency_id`, as
+  of a specific instant (`as_of`). Unlike a transaction's `amount`, `rate`
+  is an approximate market price — a plain floating-point number, not an
+  integer tied to either currency's `decimal_places` — since it's not a
+  ledger quantity. See below for how a rate is looked up for an instant
+  that wasn't directly recorded.
 
 Monetary amounts are stored and transmitted as integers in the minor unit
 of their currency (e.g. cents, per that currency's `decimal_places`)
 rather than floating point numbers, to avoid rounding errors. An amount of
-`1050` in a currency with 2 decimal places means `10.50` of it.
+`1050` in a currency with 2 decimal places means `10.50` of it. This
+doesn't apply to currency prices (see above), which are inherently
+approximate market data rather than ledger quantities.
 
 The zero-sum invariant is enforced twice: the API rejects unbalanced
 transactions before writing anything, and the database itself has a
@@ -142,6 +151,11 @@ All endpoints accept and return JSON.
 | GET    | `/currencies/{id}`  | Get a currency                            |
 | PUT    | `/currencies/{id}`  | Update a currency                         |
 | DELETE | `/currencies/{id}`  | Delete a currency                         |
+| GET    | `/currency-prices`  | List currency prices                      |
+| POST   | `/currency-prices`  | Record an exchange rate observation       |
+| GET    | `/currency-prices/{id}` | Get a currency price                  |
+| DELETE | `/currency-prices/{id}` | Delete a currency price               |
+| GET    | `/currency-prices/rate` | Look up a rate between two currencies at an instant (see below) |
 | GET    | `/healthz`          | Health check                              |
 
 Example: create a currency and two accounts, then a balanced transaction
@@ -181,7 +195,41 @@ one row per currency.
 immediately before/after it — a no-op, not an error, if it's already
 first/last among its siblings.
 
+`POST /currency-prices` records one directly-observed rate, e.g. `{
+"base_currency_id": 1, "quote_currency_id": 2, "rate": 1.16, "as_of":
+"2026-08-31T10:00:00Z" }` for "1 unit of currency 1 was worth 1.16 units
+of currency 2 at that instant". `base_currency_id`/`quote_currency_id`
+must differ, and at most one observation can be recorded per currency
+pair at the exact same instant.
+
+`GET /currency-prices/rate?base={id}&quote={id}&at={RFC3339 timestamp}`
+looks up how many units of `quote` one unit of `base` was worth at `at`
+(defaulting to now if omitted), e.g.
+`{"base_currency_id": 1, "quote_currency_id": 2, "rate": 1.1583, "at": "..."}`.
+It doesn't require an observation recorded at exactly that instant:
+
+- If there's an observation exactly at `at`, that's the rate.
+- If there are observations both before and after `at` (for that pair,
+  in either direction — an observation always implies its inverse rate
+  too), the rate is linearly interpolated between them. E.g. if 1 EUR was
+  worth 1.01 USD on day 1 and 1.06 USD on day 6, the rate on day 4 is
+  taken to be about 1.04.
+- If there's only an observation before `at`, or only one after it,
+  that's the rate — same as if it had held constant since/until then.
+- If there's no observation at all directly relating the two currencies,
+  it looks for a chain of intermediate currencies that does connect them
+  (breadth-first, fewest hops), multiplying each leg's own
+  (interpolated) rate along the way — the way cross-rates normally
+  compose. E.g. if 1 EUR is worth 1.16 USD and 1 USD is worth 0.74 GBP,
+  1 EUR is taken to be worth about 0.86 GBP even with no EUR/GBP
+  observation on record.
+- If the two currencies aren't connected by any chain of observations,
+  the request returns `404`.
+
 ## TUI
+
+The TUI doesn't have a view for currency prices yet — use the API
+directly (see above) to record and query exchange rates.
 
 `Tab`/`Shift+Tab` cycle through the Accounts, Transactions, and Currencies
 views. Within a view: `↑`/`↓` navigate, `n` creates a new record, `r`

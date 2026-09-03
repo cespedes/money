@@ -107,7 +107,7 @@ func (h *Handler) deleteCurrency(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			writeError(w, http.StatusConflict, "currency is referenced by transaction entries")
+			writeError(w, http.StatusConflict, "currency is referenced by transaction entries or currency prices")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

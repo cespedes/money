@@ -43,6 +43,30 @@ CREATE TABLE currencies (
     CONSTRAINT currencies_isin_unique UNIQUE (isin)
 );
 
+-- A directly-observed exchange rate: one unit of base_currency_id was
+-- worth `rate` units of quote_currency_id, as of a specific instant
+-- (as_of). Unlike transaction amounts, rate is an approximate market
+-- price rather than an exact ledger quantity — it's not tied to either
+-- currency's decimal_places, so the "no floats" rule for monetary
+-- amounts doesn't apply here; DOUBLE PRECISION is deliberate. Querying a
+-- rate that doesn't exactly match a stored observation (see
+-- CurrencyPriceStore.RateAt) linearly interpolates between the nearest
+-- observations before/after the requested instant, and chains through
+-- intermediate currencies if there's no data directly relating the two
+-- requested currencies.
+CREATE TABLE currency_prices (
+    id                BIGSERIAL PRIMARY KEY,
+    base_currency_id  BIGINT NOT NULL REFERENCES currencies (id) ON DELETE RESTRICT,
+    quote_currency_id BIGINT NOT NULL REFERENCES currencies (id) ON DELETE RESTRICT,
+    rate              DOUBLE PRECISION NOT NULL CHECK (rate > 0),
+    as_of             TIMESTAMPTZ NOT NULL,
+    CONSTRAINT currency_prices_distinct_currencies CHECK (base_currency_id <> quote_currency_id),
+    CONSTRAINT currency_prices_unique_observation UNIQUE (base_currency_id, quote_currency_id, as_of)
+);
+
+CREATE INDEX idx_currency_prices_base_quote ON currency_prices (base_currency_id, quote_currency_id);
+CREATE INDEX idx_currency_prices_quote_base ON currency_prices (quote_currency_id, base_currency_id);
+
 CREATE TABLE transactions (
     id          BIGSERIAL PRIMARY KEY,
     "timestamp" TIMESTAMPTZ NOT NULL,

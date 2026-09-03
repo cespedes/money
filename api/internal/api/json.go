@@ -36,6 +36,10 @@ func pgConstraintMessage(err error) string {
 		return "currency name already in use"
 	case "currencies_isin_unique":
 		return "ISIN already in use"
+	case "currency_prices_unique_observation":
+		return "a rate for this currency pair at this exact instant already exists"
+	case "currency_prices_base_currency_id_fkey", "currency_prices_quote_currency_id_fkey":
+		return "referenced currency does not exist"
 	}
 	switch pgErr.Code {
 	case "23503": // foreign_key_violation
