@@ -116,7 +116,7 @@ func newAccountsModel(c *client.Client) accountsModel {
 	)
 
 	parentPicker := table.New(
-		table.WithColumns([]table.Column{{Title: "Parent account", Width: parentPickerWidth}}),
+		table.WithColumns([]table.Column{{Title: "", Width: parentPickerWidth}}),
 		table.WithFocused(true),
 		table.WithWidth(parentPickerWidth),
 	)
@@ -460,18 +460,6 @@ func parentDropdownRows(accounts []client.Account) []table.Row {
 	return rows
 }
 
-func parentSummary(parentID *int64, accounts []client.Account) string {
-	if parentID == nil {
-		return "(none)"
-	}
-	for _, a := range accounts {
-		if a.ID == *parentID {
-			return fmt.Sprintf("#%d  %s", a.ID, a.Name)
-		}
-	}
-	return fmt.Sprintf("#%d", *parentID)
-}
-
 // accountsToRows lays accounts out as an indented tree: each account is
 // immediately followed by its own children, and accounts at the same
 // level (no parent, or the same parent) are ordered by ID.
@@ -591,11 +579,13 @@ func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID) []table
 
 // createPopup renders the "new account" form as a bordered, table-shaped
 // pop-up: a header row naming the three fields (Parent, Name, Code) above
-// a row of their fixed-width values, with the focused column highlighted.
-// While Parent has focus, a dropdown listing "(none)" plus every existing
-// account is shown below that row — sized (see syncParentPickerHeight) to
-// show them all at once, or as many as fit in the window. It's meant to
-// be composited over the accounts list via overlayCentered, not shown in
+// a row of Name/Code's fixed-width values, with the focused column
+// highlighted. Parent has no value of its own in that row — while it has
+// focus, a dropdown listing "(none)" plus every existing account is shown
+// below instead, with the currently chosen one highlighted by the
+// dropdown's own cursor — sized (see syncParentPickerHeight) to show them
+// all at once, or as many as fit in the window. It's meant to be
+// composited over the accounts list via overlayCentered, not shown in
 // place of it.
 func (m accountsModel) createPopup() string {
 	headers := make([]string, 3)
@@ -603,12 +593,8 @@ func (m accountsModel) createPopup() string {
 		headers[i] = columnHeader(label, createFocus(i) == m.createFocus)
 	}
 
-	parentValue := padOrTruncate(parentSummary(selectedParentID(m.parentPicker.Cursor(), m.rows), m.rows), createFieldWidth)
-	if m.createFocus == focusParent {
-		parentValue = focusedFieldStyle.Render(parentValue)
-	}
 	values := []string{
-		parentValue,
+		padOrTruncate("", createFieldWidth),
 		m.inputs[fieldAccountName].View(),
 		m.inputs[fieldAccountCode].View(),
 	}

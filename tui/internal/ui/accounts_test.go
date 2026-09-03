@@ -364,14 +364,26 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
 	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("tab")) // -> Name
-	m = typeString(m, "Cash")
 
 	popup := m.createPopup()
-	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)", "Cash"} {
+	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)"} {
 		if !strings.Contains(popup, want) {
 			t.Errorf("popup should contain %q, got:\n%s", want, popup)
 		}
+	}
+	if strings.Contains(popup, "Parent account") {
+		t.Errorf("popup should not repeat the Parent label as the dropdown's own column header, got:\n%s", popup)
+	}
+
+	m, _ = m.Update(keyPress("tab")) // -> Name
+	m = typeString(m, "Cash")
+
+	popup = m.createPopup()
+	if !strings.Contains(popup, "Cash") {
+		t.Errorf("popup should contain %q, got:\n%s", "Cash", popup)
+	}
+	if strings.Contains(popup, "(none)") {
+		t.Errorf("the parent dropdown (and its selected-value summary) should be hidden once focus leaves Parent, got:\n%s", popup)
 	}
 
 	// The list view underneath must stay the accounts table, not the
