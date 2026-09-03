@@ -390,12 +390,12 @@ func TestSyncParentPickerHeight(t *testing.T) {
 func TestAccountsModel_CreatePopup(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
 	m.SetSize(100, 20) // the table needs a known width to render row content
-	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
 	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 	m, _ = m.Update(keyPress("n"))
 
 	popup := m.createPopup()
-	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)"} {
+	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)", "#2  Liabilities"} {
 		if !strings.Contains(popup, want) {
 			t.Errorf("popup should contain %q, got:\n%s", want, popup)
 		}
@@ -404,6 +404,9 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 		t.Errorf("popup should not repeat the Parent label as the dropdown's own column header, got:\n%s", popup)
 	}
 
+	// Pick Liabilities as the parent, then move on to Name.
+	m, _ = m.Update(keyPress("down"))
+	m, _ = m.Update(keyPress("down"))
 	m, _ = m.Update(keyPress("tab")) // -> Name
 	m = typeString(m, "Cash")
 
@@ -411,8 +414,15 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 	if !strings.Contains(popup, "Cash") {
 		t.Errorf("popup should contain %q, got:\n%s", "Cash", popup)
 	}
-	if strings.Contains(popup, "(none)") {
-		t.Errorf("the parent dropdown (and its selected-value summary) should be hidden once focus leaves Parent, got:\n%s", popup)
+	// The dropdown itself (and its other option, Assets) is hidden once
+	// focus leaves Parent, but the chosen parent must still show as
+	// plain text — otherwise the selection becomes invisible while
+	// filling in the rest of the form.
+	if strings.Contains(popup, "Assets") {
+		t.Errorf("the parent dropdown should be hidden once focus leaves Parent, got:\n%s", popup)
+	}
+	if !strings.Contains(popup, "#2  Liabilities") {
+		t.Errorf("the chosen parent should still show as text once focus leaves Parent, got:\n%s", popup)
 	}
 
 	// The list view underneath must stay the accounts table, not the
@@ -433,6 +443,35 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 	}
 	if strings.Contains(m.View(), "name is required") {
 		t.Error("the error should not also be duplicated below the background list")
+	}
+}
+
+// TestAccountsModel_CreatePopup_DropdownDirectlyBelowFields is a
+// regression test: the parent dropdown's own column header rendered as a
+// blank line (see newAccountsModel's parentPicker), leaving an extra
+// blank line between the field row and the dropdown's first option
+// instead of the dropdown appearing directly beneath it.
+func TestAccountsModel_CreatePopup_DropdownDirectlyBelowFields(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 20)
+	m.rows = []client.Account{{ID: 1, Name: "Assets"}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+	m, _ = m.Update(keyPress("n"))
+
+	lines := strings.Split(m.createPopup(), "\n")
+	fieldsLine := -1
+	for i, l := range lines {
+		if strings.Contains(l, "Parent") && strings.Contains(l, "Name") && strings.Contains(l, "Code") {
+			fieldsLine = i
+			break
+		}
+	}
+	if fieldsLine < 0 || fieldsLine+2 >= len(lines) {
+		t.Fatalf("couldn't locate the header/value/dropdown lines in:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[fieldsLine+2], "(none)") {
+		t.Errorf("expected the dropdown's first row directly below the field row, got %q instead:\n%s",
+			lines[fieldsLine+2], strings.Join(lines, "\n"))
 	}
 }
 

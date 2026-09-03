@@ -469,6 +469,23 @@ func selectedParentID(choice int, options []client.Account) *int64 {
 	return &id
 }
 
+// parentSummary renders parentID as it would read among options —
+// "(none)" for nil, "#id  Name" for a match, or just "#id" if it isn't
+// among options (e.g. filtered out by startEdit) — for display in the
+// Parent field once it no longer has focus and its dropdown is hidden
+// (see createPopup).
+func parentSummary(parentID *int64, options []client.Account) string {
+	if parentID == nil {
+		return "(none)"
+	}
+	for _, a := range options {
+		if a.ID == *parentID {
+			return fmt.Sprintf("#%d  %s", a.ID, a.Name)
+		}
+	}
+	return fmt.Sprintf("#%d", *parentID)
+}
+
 // parentCursorFor is selectedParentID's inverse, used to preselect an
 // account's current parent when opening it for editing (see startEdit).
 // Falls back to 0 ("(none)") if parentID isn't found in options — e.g. it
@@ -708,14 +725,18 @@ func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID) []table
 
 // createPopup renders the "new"/"edit account" form (see startEdit) as a
 // bordered, table-shaped pop-up: a header row naming the three fields
-// (Parent, Name, Code) above a row of Name/Code's fixed-width values,
-// with the focused column highlighted. Parent has no value of its own in
-// that row — while it has focus, a dropdown listing "(none)" plus every
-// eligible account is shown below instead, with the currently chosen one
-// highlighted by the dropdown's own cursor — sized (see
-// syncParentPickerHeight) to show them all at once, or as many as fit in
-// the window. It's meant to be composited over the accounts list via
-// overlayCentered, not shown in place of it.
+// (Parent, Name, Code) above a row of their fixed-width values, with the
+// focused column highlighted. While Parent has focus, its value is
+// replaced by a dropdown listing "(none)" plus every eligible account
+// directly below that row (its own column header stripped, so it sits
+// flush under the field row rather than leaving a blank line), with the
+// currently chosen one highlighted by the dropdown's own cursor — sized
+// (see syncParentPickerHeight) to show them all at once, or as many as
+// fit in the window. Once focus moves elsewhere, the dropdown is hidden
+// again and Parent's value shows the chosen account as plain text
+// instead, so the selection stays visible while editing Name/Code. It's
+// meant to be composited over the accounts list via overlayCentered, not
+// shown in place of it.
 func (m accountsModel) createPopup() string {
 	title := "New account"
 	if m.editingID != nil {
@@ -727,8 +748,13 @@ func (m accountsModel) createPopup() string {
 		headers[i] = columnHeader(label, createFocus(i) == m.createFocus)
 	}
 
+	parentValue := padOrTruncate("", createFieldWidth)
+	if m.createFocus != focusParent {
+		selected := selectedParentID(m.parentPicker.Cursor(), m.parentOptions)
+		parentValue = padOrTruncate(parentSummary(selected, m.parentOptions), createFieldWidth)
+	}
 	values := []string{
-		padOrTruncate("", createFieldWidth),
+		parentValue,
 		m.inputs[fieldAccountName].View(),
 		m.inputs[fieldAccountCode].View(),
 	}
@@ -737,7 +763,11 @@ func (m accountsModel) createPopup() string {
 		strings.Join(headers, "  ") + "\n" +
 		strings.Join(values, "  ")
 	if m.createFocus == focusParent {
-		content += "\n" + m.parentPicker.View()
+		picker := m.parentPicker.View()
+		if _, rest, ok := strings.Cut(picker, "\n"); ok {
+			picker = rest // drop the picker's own (blank) column header
+		}
+		content += "\n" + picker
 	}
 	if m.err != "" {
 		content += "\n\n" + errorStyle.Render("Error: "+m.err)
