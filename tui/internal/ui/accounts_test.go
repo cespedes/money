@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,11 +101,11 @@ func TestAccountsToRows(t *testing.T) {
 	}
 	// Assets (the root) comes first, followed immediately by its child
 	// Cash, indented. The balance column replaces the parent column, and
-	// shows each balance formatted per its own currency.
-	if got, want := rows[0], (table.Row{"2", "", "Assets", "USD10.00"}); !reflect.DeepEqual(got, want) {
+	// shows each balance formatted per its own currency. No ID column.
+	if got, want := rows[0], (table.Row{"", "Assets", "USD10.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"1", "1000", "  Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1000", "  Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
 }
@@ -278,7 +279,7 @@ func TestAccountsModel_NKeyEntersCreateMode(t *testing.T) {
 	if m.parentPicker.Cursor() != 0 {
 		t.Fatalf("parentPicker cursor = %d, want 0 (\"(none)\")", m.parentPicker.Cursor())
 	}
-	if got, want := m.parentPicker.Rows(), parentDropdownRows(m.rows); !reflect.DeepEqual(got, want) {
+	if got, want := m.parentPicker.Rows(), parentDropdownRows(orderAccountsAsTree(m.rows)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("parentPicker rows = %v, want %v", got, want)
 	}
 	if !m.Editing() {
@@ -386,6 +387,34 @@ func TestAccountsModel_CreatePopupShowsAllParentOptions(t *testing.T) {
 	}
 }
 
+// TestAccountsModel_ParentDropdownIndentsChildren checks that the parent
+// dropdown mirrors the accounts list's own indented tree layout (see
+// orderAccountsAsTree/nodesToRows), rather than a flat list — and that no
+// row shows an account's ID, only its name.
+func TestAccountsModel_ParentDropdownIndentsChildren(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m.SetSize(100, 30)
+	assetsID := int64(1)
+	cashID := int64(2)
+	m.rows = []client.Account{
+		{ID: 1, Name: "Assets"},
+		{ID: 2, Name: "Cash", ParentID: &assetsID},
+		{ID: 3, Name: "Petty Cash", ParentID: &cashID},
+	}
+	m, _ = m.Update(keyPress("n")) // focus starts on Parent
+
+	rows := m.parentPicker.Rows()
+	want := []table.Row{
+		{"(none)"},
+		{"Assets"},
+		{"  Cash"},
+		{"    Petty Cash"},
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Errorf("parentPicker rows = %v, want %v", rows, want)
+	}
+}
+
 func TestSyncParentPickerHeight(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
 
@@ -416,7 +445,7 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 	m, _ = m.Update(keyPress("n"))
 
 	popup := m.createPopup()
-	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)", "#2  Liabilities"} {
+	for _, want := range []string{"New account", "Parent", "Name", "Code", "(none)", "Liabilities"} {
 		if !strings.Contains(popup, want) {
 			t.Errorf("popup should contain %q, got:\n%s", want, popup)
 		}
@@ -442,7 +471,7 @@ func TestAccountsModel_CreatePopup(t *testing.T) {
 	if strings.Contains(popup, "Assets") {
 		t.Errorf("the parent dropdown should be hidden once focus leaves Parent, got:\n%s", popup)
 	}
-	if !strings.Contains(popup, "#2  Liabilities") {
+	if !strings.Contains(popup, "Liabilities") {
 		t.Errorf("the chosen parent should still show as text once focus leaves Parent, got:\n%s", popup)
 	}
 
@@ -512,7 +541,7 @@ func TestOverlayCentered(t *testing.T) {
 }
 
 func TestSelectedParentID(t *testing.T) {
-	accounts := []client.Account{{ID: 10, Name: "Assets"}, {ID: 20, Name: "Liabilities"}}
+	accounts := orderAccountsAsTree([]client.Account{{ID: 10, Name: "Assets"}, {ID: 20, Name: "Liabilities"}})
 
 	if got := selectedParentID(0, accounts); got != nil {
 		t.Errorf("cursor 0 (\"(none)\") = %v, want nil", got)
@@ -599,11 +628,21 @@ func TestAccountsModel_EKeyPrefillsForm(t *testing.T) {
 	if !strings.Contains(popup, "Edit account") {
 		t.Errorf("popup should be titled %q, got:\n%s", "Edit account", popup)
 	}
-	if strings.Contains(popup, "#2  Cash") {
-		t.Errorf("popup's Parent dropdown should not offer the account being edited as its own parent, got:\n%s", popup)
+	// Check the dropdown's own rows directly, not the whole popup string:
+	// "Cash" would also match the Name field's prefilled value.
+	var dropdownNames []string
+	for _, r := range m.parentPicker.Rows() {
+		if len(r) > 0 {
+			dropdownNames = append(dropdownNames, strings.TrimSpace(r[0]))
+		}
 	}
-	if !strings.Contains(popup, "#1  Assets") {
-		t.Errorf("popup's Parent dropdown should still offer other accounts, got:\n%s", popup)
+	for _, name := range dropdownNames {
+		if name == "Cash" {
+			t.Errorf("popup's Parent dropdown should not offer the account being edited as its own parent, got %v", dropdownNames)
+		}
+	}
+	if !slices.Contains(dropdownNames, "Assets") {
+		t.Errorf("popup's Parent dropdown should still offer other accounts, got %v", dropdownNames)
 	}
 }
 

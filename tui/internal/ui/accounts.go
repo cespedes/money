@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/table"
@@ -49,11 +48,13 @@ type accountsModel struct {
 	// both, and submitCreate branches on this to POST or PUT.
 	editingID *int64
 	// parentOptions is whichever accounts are currently offered as a
-	// parent choice — m.rows when creating, or m.rows with the account
-	// being edited filtered out (see startEdit, accountsExcluding) — kept
-	// alongside parentPicker so selectedParentID can map its cursor back
-	// to an account ID regardless of which case built the dropdown.
-	parentOptions []client.Account
+	// parent choice, as an indented tree (see orderAccountsAsTree) so the
+	// dropdown can show each one's depth — m.rows when creating, or
+	// m.rows with the account being edited filtered out (see startEdit,
+	// accountsExcluding) — kept alongside parentPicker so
+	// selectedParentID can map its cursor back to an account ID
+	// regardless of which case built the dropdown.
+	parentOptions []accountTreeNode
 	parentPicker  table.Model // dropdown of "(none)" + parentOptions, for the parent field
 	inputs        []textinput.Model
 
@@ -101,7 +102,6 @@ const parentPickerWidth = 3*createFieldWidth + 4
 
 func newAccountsModel(c *client.Client) accountsModel {
 	columns := []table.Column{
-		{Title: "ID", Width: 6},
 		{Title: "Code", Width: 10},
 		{Title: "Name", Width: 30},
 		{Title: "Balances", Width: balancesColumnWidth},
@@ -328,7 +328,7 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 	case "n":
 		m.mode = accountsModeCreate
 		m.editingID = nil
-		m.parentOptions = m.rows
+		m.parentOptions = orderAccountsAsTree(m.rows)
 		m.parentPicker.SetRows(parentDropdownRows(m.parentOptions))
 		m.parentPicker.SetCursor(0)
 		m.syncParentPickerHeight()
@@ -461,42 +461,42 @@ func (m *accountsModel) setCreateFocus(f createFocus) {
 // selectedParentID maps a parentPicker cursor position to the chosen
 // parent account ID, within options (m.parentOptions, not necessarily
 // m.rows — see startEdit). Index 0 is always the "(none)" option.
-func selectedParentID(choice int, options []client.Account) *int64 {
+func selectedParentID(choice int, options []accountTreeNode) *int64 {
 	i := choice - 1
 	if i < 0 || i >= len(options) {
 		return nil
 	}
-	id := options[i].ID
+	id := options[i].account.ID
 	return &id
 }
 
 // parentSummary renders parentID as it would read among options —
-// "(none)" for nil, "#id  Name" for a match, or just "#id" if it isn't
-// among options (e.g. filtered out by startEdit) — for display in the
-// Parent field once it no longer has focus and its dropdown is hidden
-// (see createPopup).
-func parentSummary(parentID *int64, options []client.Account) string {
+// "(none)" for nil, the account's name for a match, or "(unknown)" if
+// it isn't among options (e.g. filtered out by startEdit) — for display
+// in the Parent field once it no longer has focus and its dropdown is
+// hidden (see createPopup).
+func parentSummary(parentID *int64, options []accountTreeNode) string {
 	if parentID == nil {
 		return "(none)"
 	}
-	for _, a := range options {
-		if a.ID == *parentID {
-			return fmt.Sprintf("#%d  %s", a.ID, a.Name)
+	for _, n := range options {
+		if n.account.ID == *parentID {
+			return n.account.Name
 		}
 	}
-	return fmt.Sprintf("#%d", *parentID)
+	return "(unknown)"
 }
 
 // parentCursorFor is selectedParentID's inverse, used to preselect an
 // account's current parent when opening it for editing (see startEdit).
 // Falls back to 0 ("(none)") if parentID isn't found in options — e.g. it
 // was filtered out because it's the account being edited itself.
-func parentCursorFor(parentID *int64, options []client.Account) int {
+func parentCursorFor(parentID *int64, options []accountTreeNode) int {
 	if parentID == nil {
 		return 0
 	}
-	for i, a := range options {
-		if a.ID == *parentID {
+	for i, n := range options {
+		if n.account.ID == *parentID {
 			return i + 1
 		}
 	}
@@ -523,7 +523,7 @@ func (m *accountsModel) startEdit(account client.Account) {
 	m.mode = accountsModeCreate
 	id := account.ID
 	m.editingID = &id
-	m.parentOptions = accountsExcluding(m.rows, account.ID)
+	m.parentOptions = orderAccountsAsTree(accountsExcluding(m.rows, account.ID))
 	m.parentPicker.SetRows(parentDropdownRows(m.parentOptions))
 	m.parentPicker.SetCursor(parentCursorFor(account.ParentID, m.parentOptions))
 	m.syncParentPickerHeight()
@@ -588,14 +588,15 @@ func (m accountsModel) updateConfirmDelete(msg tea.KeyMsg) (accountsModel, tea.C
 	}
 }
 
-// parentDropdownRows lists the "(none)" option followed by every existing
-// account, in the same order as accounts, so a parentPicker cursor
-// position can be mapped back to an account via selectedParentID.
-func parentDropdownRows(accounts []client.Account) []table.Row {
-	rows := make([]table.Row, 0, len(accounts)+1)
+// parentDropdownRows lists the "(none)" option followed by every eligible
+// account as an indented tree (see orderAccountsAsTree), in the same
+// order as options, so a parentPicker cursor position can be mapped back
+// to an account via selectedParentID.
+func parentDropdownRows(options []accountTreeNode) []table.Row {
+	rows := make([]table.Row, 0, len(options)+1)
 	rows = append(rows, table.Row{"(none)"})
-	for _, a := range accounts {
-		rows = append(rows, table.Row{fmt.Sprintf("#%d  %s", a.ID, a.Name)})
+	for _, n := range options {
+		rows = append(rows, table.Row{strings.Repeat("  ", n.depth) + n.account.Name})
 	}
 	return rows
 }
@@ -616,7 +617,7 @@ func nodesToRows(nodes []accountTreeNode, currencies currencyByID) []table.Row {
 			code = *a.Code
 		}
 		name := strings.Repeat("  ", node.depth) + a.Name
-		rows = append(rows, table.Row{strconv.FormatInt(a.ID, 10), code, name, formatBalances(a.Balances, currencies)})
+		rows = append(rows, table.Row{code, name, formatBalances(a.Balances, currencies)})
 	}
 	return rows
 }
