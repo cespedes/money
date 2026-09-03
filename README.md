@@ -211,9 +211,9 @@ derived on submit; Name must appear at the very start or end of it
 exactly, split by an optional thousands separator into "1"+"234" and/or
 followed by a decimal separator and one or more decimal digits, or the
 submission is rejected with an error. Only Name is required. The
-currencies list itself shows just Name and that same computed Format
-(applied to the currency's actual stored rules), rather than the
-individual fields.
+currencies list itself shows Name, that same computed Format (applied to
+the currency's actual stored rules), and ISIN — rather than the
+individual formatting fields.
 
 When creating a transaction, the TUI walks through description, timestamp,
 and then repeatedly asks for an account, a currency (picked from a

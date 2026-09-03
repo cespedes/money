@@ -28,21 +28,22 @@ func typeStringC(m currenciesModel, s string) currenciesModel {
 }
 
 func TestCurrenciesToRows(t *testing.T) {
+	isin := "US0000000001"
 	rows := currenciesToRows([]client.Currency{
-		{ID: 1, Name: "$", SymbolBefore: true, ThousandsSeparator: ",", DecimalSeparator: ".", DecimalPlaces: 2},
+		{ID: 1, Name: "$", SymbolBefore: true, ThousandsSeparator: ",", DecimalSeparator: ".", DecimalPlaces: 2, ISIN: &isin},
 		{ID: 2, Name: "EUR", SymbolBefore: false, SymbolSpace: true, ThousandsSeparator: ".", DecimalSeparator: ",", DecimalPlaces: 2},
 		{ID: 3, Name: "PTS", SymbolBefore: false, SymbolSpace: true, DecimalPlaces: 0},
 	})
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if got, want := rows[0], (table.Row{"$", "$1,234.00"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[0], (table.Row{"$", "$1,234.00", isin}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"EUR", "1.234,00 EUR"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"EUR", "1.234,00 EUR", ""}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
-	if got, want := rows[2], (table.Row{"PTS", "1234 PTS"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[2], (table.Row{"PTS", "1234 PTS", ""}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 2 = %v, want %v", got, want)
 	}
 }

@@ -58,6 +58,7 @@ func newCurrenciesModel(c *client.Client) currenciesModel {
 	columns := []table.Column{
 		{Title: "Name", Width: 24},
 		{Title: "Format", Width: 20},
+		{Title: "ISIN", Width: 14},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -326,7 +327,11 @@ func (m currenciesModel) updateConfirmDelete(msg tea.KeyMsg) (currenciesModel, t
 func currenciesToRows(currencies []client.Currency) []table.Row {
 	rows := make([]table.Row, 0, len(currencies))
 	for _, c := range currencies {
-		rows = append(rows, table.Row{c.Name, c.Format(exampleAmount(c.DecimalPlaces))})
+		isin := ""
+		if c.ISIN != nil {
+			isin = *c.ISIN
+		}
+		rows = append(rows, table.Row{c.Name, c.Format(exampleAmount(c.DecimalPlaces)), isin})
 	}
 	return rows
 }
