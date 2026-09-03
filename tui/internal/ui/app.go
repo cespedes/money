@@ -143,6 +143,8 @@ func (m App) View() tea.View {
 	switch {
 	case m.active == tabAccounts && m.accounts.mode == accountsModeCreate:
 		content = overlayCentered(content, m.accounts.createPopup(), m.width, m.height)
+	case m.active == tabAccounts && m.accounts.mode == accountsModeLedgerCreate:
+		content = overlayCentered(content, m.accounts.ledgerEntryPopup(), m.width, m.height)
 	case m.active == tabCurrencies && m.currencies.mode == currenciesModeCreate:
 		content = overlayCentered(content, m.currencies.createPopup(), m.width, m.height)
 	}

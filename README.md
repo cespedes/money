@@ -291,15 +291,23 @@ confirm you're done. A transaction can mix currencies freely; it will
 only submit once each currency's own entries sum to zero.
 
 Pressing `n` inside an account's ledger is a quicker path to the common
-case: a transaction between that account and exactly one other, in one
-currency. It pre-fills the current date/time, an empty description and
-amount, and whichever currency this account's ledger was last posted in
-(or the first available currency, if it has none yet) — all editable —
-then asks for the other account (a dropdown, everything but the account
-whose ledger is open) and, optionally, its own amount; left blank, that
-amount is taken to be whatever balances the transaction against the
-first amount. `Tab`/`Shift+Tab` move between all six fields; `Enter`
-submits from any of them.
+case: a transaction between that account and exactly one other. Unlike
+the general wizard above, it's a single table-shaped pop-up with two
+rows, both visible at once — Timestamp, Description, Amount, Currency
+for this account, then Account, Amount, Currency for the other side —
+`Tab`/`Shift+Tab` move between all seven fields and `Enter` submits from
+any of them. It pre-fills the current date/time, an empty description
+and amount, and whichever currency this account's ledger was last posted
+in (or the first available currency, if it has none yet) for both rows —
+all editable, including the second row's currency, which needn't match
+the first's. The other account is picked from a dropdown (everything but
+the account whose ledger is open). The second row's amount is optional
+only when both rows share the same currency, where a blank amount is
+taken to be whatever balances the transaction against the first; with
+different currencies there's no such well-defined default (no exchange
+rate is applied here), so an explicit amount is required, and as always
+the transaction only actually submits once each currency's own entries
+sum to zero.
 
 ## Project layout
 

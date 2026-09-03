@@ -1017,6 +1017,48 @@ func TestAccountsModel_LedgerNKeyOpensFormWithDefaults(t *testing.T) {
 	}
 }
 
+// TestAccountsModel_LedgerEntryPopup checks the table-shaped layout: two
+// rows of headers (Timestamp/Description/Amount/Currency, then
+// Account/Amount/Currency), and that a field's dropdown (Other account
+// here) is shown while it has focus but not once focus moves elsewhere,
+// where it's replaced by the chosen option's plain-text name instead.
+func TestAccountsModel_LedgerEntryPopup(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n"))
+
+	popup := m.ledgerEntryPopup()
+	for _, want := range []string{
+		"New entry in Cash",
+		"Timestamp", "Description", "Amount", "Currency",
+		"Account",
+		"USD",
+	} {
+		if !strings.Contains(popup, want) {
+			t.Errorf("popup should contain %q, got:\n%s", want, popup)
+		}
+	}
+
+	// Move focus to Other account: its dropdown should appear.
+	for m.ledgerEntryFocus != focusEntryOtherAccount {
+		m, _ = m.Update(keyPress("tab"))
+	}
+	popup = m.ledgerEntryPopup()
+	if !strings.Contains(popup, "Revenue") {
+		t.Errorf("popup should list Revenue in the Other account dropdown, got:\n%s", popup)
+	}
+
+	// Move on: the dropdown should be gone, replaced by the chosen name.
+	m, _ = m.Update(keyPress("tab"))
+	popup = m.ledgerEntryPopup()
+	if !strings.Contains(popup, "Revenue") {
+		t.Errorf("popup should still show the chosen Other account as text, got:\n%s", popup)
+	}
+
+	if got := m.View(); !strings.Contains(got, "Transactions for") {
+		t.Errorf("View() should still render the ledger table under the pop-up, got:\n%s", got)
+	}
+}
+
 func TestAccountsModel_LedgerEntryDefaultsToLastUsedCurrency(t *testing.T) {
 	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 	entries := []client.LedgerEntry{
@@ -1029,6 +1071,9 @@ func TestAccountsModel_LedgerEntryDefaultsToLastUsedCurrency(t *testing.T) {
 	if got := m.ledgerCurrencyPicker.Cursor(); got != 1 {
 		t.Fatalf("currency cursor = %d, want 1 (EUR, the last-used currency)", got)
 	}
+	if got := m.ledgerOtherCurrencyPicker.Cursor(); got != 1 {
+		t.Fatalf("other currency cursor = %d, want 1 (EUR too, matching the first row's default)", got)
+	}
 }
 
 func TestAccountsModel_LedgerEntryDefaultsToFirstCurrencyWhenNoLedgerEntries(t *testing.T) {
@@ -1039,6 +1084,9 @@ func TestAccountsModel_LedgerEntryDefaultsToFirstCurrencyWhenNoLedgerEntries(t *
 	if got := m.ledgerCurrencyPicker.Cursor(); got != 0 {
 		t.Fatalf("currency cursor = %d, want 0 (USD, the first currency, with no ledger history)", got)
 	}
+	if got := m.ledgerOtherCurrencyPicker.Cursor(); got != 0 {
+		t.Fatalf("other currency cursor = %d, want 0 (USD too, matching the first row's default)", got)
+	}
 }
 
 func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
@@ -1048,7 +1096,7 @@ func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
 	order := []ledgerEntryFocus{
 		focusEntryTimestamp, focusEntryDescription, focusEntryAmount,
 		focusEntryCurrency, focusEntryOtherAccount, focusEntryOtherAmount,
-		focusEntryTimestamp,
+		focusEntryOtherCurrency, focusEntryTimestamp,
 	}
 	for i, want := range order[1:] {
 		m, _ = m.Update(keyPress("tab"))
@@ -1057,8 +1105,8 @@ func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
 		}
 	}
 	m, _ = m.Update(keyPress("shift+tab"))
-	if m.ledgerEntryFocus != focusEntryOtherAmount {
-		t.Fatalf("after shift+tab: ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
+	if m.ledgerEntryFocus != focusEntryOtherCurrency {
+		t.Fatalf("after shift+tab: ledgerEntryFocus = %v, want focusEntryOtherCurrency", m.ledgerEntryFocus)
 	}
 }
 
@@ -1127,6 +1175,32 @@ func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
 		m, _ = m.Update(keyPress("enter"))
 		if m.err != "amount must be an integer" {
 			t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+		}
+		if m.ledgerEntryFocus != focusEntryOtherAmount {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
+		}
+	})
+
+	t.Run("blank other amount with a different other currency", func(t *testing.T) {
+		eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+		m := newTestLedgerModel(t, nil, nil, testUSD, eur)
+		m, _ = m.Update(keyPress("n"))
+		m, _ = m.Update(keyPress("tab")) // -> Description
+		m = typeString(m, "Refund")
+		m, _ = m.Update(keyPress("tab")) // -> Amount
+		m = typeString(m, "500")
+		m, _ = m.Update(keyPress("tab")) // -> Currency
+		m, _ = m.Update(keyPress("tab")) // -> Other account
+		m, _ = m.Update(keyPress("tab")) // -> Other amount
+		m, _ = m.Update(keyPress("tab")) // -> Other currency
+		m, _ = m.Update(keyPress("down"))
+		if got, ok := currencyAt(m.ledgerOtherCurrencyPicker.Cursor(), m.currencyList); !ok || got.ID != eur.ID {
+			t.Fatalf("other currency = %+v (ok=%v), want EUR", got, ok)
+		}
+
+		m, _ = m.Update(keyPress("enter"))
+		if m.err != "amount is required when the two entries use different currencies" {
+			t.Fatalf("err = %q, want the different-currencies message", m.err)
 		}
 		if m.ledgerEntryFocus != focusEntryOtherAmount {
 			t.Fatalf("ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
@@ -1217,6 +1291,42 @@ func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (an explicit other amount, not auto-balanced)", gotTransaction.Entries, want)
+	}
+}
+
+func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	var gotTransaction client.Transaction
+	m := newTestLedgerModel(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotTransaction)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(gotTransaction)
+	}, nil, testUSD, eur)
+
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Description
+	m = typeString(m, "Exchange")
+	m, _ = m.Update(keyPress("tab")) // -> Amount
+	m = typeString(m, "-1000")
+	m, _ = m.Update(keyPress("tab")) // -> Currency (stays USD)
+	m, _ = m.Update(keyPress("tab")) // -> Other account
+	m, _ = m.Update(keyPress("tab")) // -> Other amount
+	m = typeString(m, "900")
+	m, _ = m.Update(keyPress("tab")) // -> Other currency
+	m, _ = m.Update(keyPress("down"))
+
+	_, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the transaction")
+	}
+	cmd()
+
+	want := []client.Entry{
+		{AccountID: 5, Amount: -1000, CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: 900, CurrencyID: eur.ID},
+	}
+	if !reflect.DeepEqual(gotTransaction.Entries, want) {
+		t.Fatalf("Entries = %+v, want %+v (each entry keeping its own row's currency)", gotTransaction.Entries, want)
 	}
 }
 
