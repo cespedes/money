@@ -159,7 +159,7 @@ func (m App) footer() string {
 		case accountsModeLedger:
 			return "↑/↓: navigate  •  esc/q: back"
 		case accountsModeCreate:
-			return fmt.Sprintf("tab/←/→: switch field  •  ↑/↓: choose parent  •  enter: %s  •  esc: cancel", submitVerb(m.accounts.editingID))
+			return fmt.Sprintf("tab: switch field  •  ↑/↓: choose parent  •  enter: %s  •  esc: cancel", submitVerb(m.accounts.editingID))
 		}
 	case tabCurrencies:
 		if m.currencies.mode == currenciesModeCreate {

@@ -286,7 +286,7 @@ func TestAccountsModel_NKeyEntersCreateMode(t *testing.T) {
 	}
 }
 
-func TestAccountsModel_CreateFocusCyclesWithTabAndArrows(t *testing.T) {
+func TestAccountsModel_CreateFocusCyclesWithTab(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
 	m, _ = m.Update(keyPress("n"))
 
@@ -298,18 +298,39 @@ func TestAccountsModel_CreateFocusCyclesWithTabAndArrows(t *testing.T) {
 		}
 	}
 
-	// shift+tab and left both move backward.
 	m, _ = m.Update(keyPress("shift+tab"))
 	if m.createFocus != focusCode {
 		t.Fatalf("after shift+tab: createFocus = %v, want focusCode", m.createFocus)
 	}
+}
+
+// TestAccountsModel_LeftRightEditWithinFieldNotFocus is a regression
+// test: left/right must move the cursor within the focused text field
+// (Name/Code), not change which field has focus — only tab/shift+tab do
+// that (see TestAccountsModel_CreateFocusCyclesWithTab).
+func TestAccountsModel_LeftRightEditWithinFieldNotFocus(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Name
+	m = typeString(m, "Cash")
+
 	m, _ = m.Update(keyPress("left"))
 	if m.createFocus != focusName {
-		t.Fatalf("after left: createFocus = %v, want focusName", m.createFocus)
+		t.Fatalf("createFocus after left = %v, want focusName (unchanged)", m.createFocus)
 	}
+	if got := m.inputs[fieldAccountName].Value(); got != "Cash" {
+		t.Fatalf("Name value after left = %q, want unchanged %q", got, "Cash")
+	}
+	// The cursor moved left within the field: typing now inserts before
+	// the last character instead of appending after it.
+	m = typeString(m, "!")
+	if got := m.inputs[fieldAccountName].Value(); got != "Cas!h" {
+		t.Fatalf("Name value after left+type = %q, want %q", got, "Cas!h")
+	}
+
 	m, _ = m.Update(keyPress("right"))
-	if m.createFocus != focusCode {
-		t.Fatalf("after right: createFocus = %v, want focusCode", m.createFocus)
+	if m.createFocus != focusName {
+		t.Fatalf("createFocus after right = %v, want focusName (unchanged)", m.createFocus)
 	}
 }
 

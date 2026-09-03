@@ -404,11 +404,12 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 }
 
 // updateCreate handles the "new account" form: Parent, Name, and Code are
-// all shown on one row, and tab/shift+tab or left/right move focus
-// between them (arrow keys always change focus rather than the text
-// cursor, so there's one consistent way to navigate the form). While the
-// Parent field has focus, a dropdown of "(none)" plus the existing
-// accounts is shown (see createPopup), navigated like any other table.
+// all shown on one row. tab/shift+tab are the only way to move focus
+// between them, leaving left/right free to move the cursor within
+// whichever text field has focus (or do nothing while Parent's dropdown
+// has focus, since that's navigated with up/down like any other table).
+// While Parent has focus, that dropdown of "(none)" plus the existing
+// accounts is shown (see createPopup).
 func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -418,10 +419,10 @@ func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.submitForm()
-	case "tab", "right":
+	case "tab":
 		m.setCreateFocus((m.createFocus + 1) % 3)
 		return m, nil
-	case "shift+tab", "left":
+	case "shift+tab":
 		m.setCreateFocus((m.createFocus + 2) % 3) // +2 mod 3 == -1 mod 3
 		return m, nil
 	}

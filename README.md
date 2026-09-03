@@ -213,10 +213,12 @@ and a ledger's running balance is likewise kept separate per currency.
 
 Creating an account opens a pop-up over the accounts list, laid out as a
 small table — Parent, Name, and Code as fixed-width columns with their
-names above. `Tab`/`Shift+Tab` or `←`/`→` move between them. While Parent
-has focus, a dropdown lists "(none)" and every existing account — all of
-them at once, or as many as fit in the window — and `↑`/`↓` pick one.
-Name is required, code is optional.
+names above. `Tab`/`Shift+Tab` move between them; `←`/`→` edit within
+whichever text field (Name or Code) has focus instead, moving the cursor
+the way they would in any text input. While Parent has focus, a dropdown
+lists "(none)" and every existing account — all of them at once, or as
+many as fit in the window — and `↑`/`↓` pick one. Name is required, code
+is optional.
 
 Creating a currency opens a similar pop-up with three fields: Name, Format,
 and ISIN. Format is a single example of how the currency renders a fixed
