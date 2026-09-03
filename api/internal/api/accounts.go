@@ -117,6 +117,37 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+type moveAccountRequest struct {
+	Direction string `json:"direction"`
+}
+
+func (h *Handler) moveAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	var req moveAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Direction != store.MoveUp && req.Direction != store.MoveDown {
+		writeError(w, http.StatusBadRequest, `direction must be "up" or "down"`)
+		return
+	}
+
+	if err := h.store.Accounts.Move(r.Context(), id, req.Direction); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {

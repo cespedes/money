@@ -104,6 +104,93 @@ func TestCreateAccount_DuplicateCode(t *testing.T) {
 	}
 }
 
+func TestCreateAccount_AssignsSequentialPosition(t *testing.T) {
+	h := newTestHandler(t)
+
+	var a, b, c models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Assets"}, &a)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Liabilities"}, &b)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Equity"}, &c)
+
+	if a.Position != 0 || b.Position != 1 || c.Position != 2 {
+		t.Fatalf("positions = %d, %d, %d, want 0, 1, 2", a.Position, b.Position, c.Position)
+	}
+
+	// A child account's position is independent of its parent's siblings:
+	// it starts its own sibling group back at 0.
+	assetsID := a.ID
+	var child models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash", ParentID: &assetsID}, &child)
+	if child.Position != 0 {
+		t.Fatalf("first child's position = %d, want 0", child.Position)
+	}
+}
+
+func TestMoveAccount(t *testing.T) {
+	h := newTestHandler(t)
+
+	var a, b, c models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Assets"}, &a)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Liabilities"}, &b)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Equity"}, &c)
+
+	// Move Liabilities (position 1) up: swaps with Assets (position 0).
+	rec := do(t, h, http.MethodPost, fmt.Sprintf("/accounts/%d/move", b.ID), map[string]string{"direction": "up"}, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("move up: status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	var got models.Account
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", a.ID), nil, &got)
+	if got.Position != 1 {
+		t.Fatalf("Assets.Position after swap = %d, want 1", got.Position)
+	}
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", b.ID), nil, &got)
+	if got.Position != 0 {
+		t.Fatalf("Liabilities.Position after swap = %d, want 0", got.Position)
+	}
+
+	// Liabilities is now first; moving it up again is a no-op, not an error.
+	rec = do(t, h, http.MethodPost, fmt.Sprintf("/accounts/%d/move", b.ID), map[string]string{"direction": "up"}, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("move up at boundary: status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", b.ID), nil, &got)
+	if got.Position != 0 {
+		t.Fatalf("Liabilities.Position after no-op move = %d, want unchanged 0", got.Position)
+	}
+
+	// Equity is last; moving it down is likewise a no-op.
+	rec = do(t, h, http.MethodPost, fmt.Sprintf("/accounts/%d/move", c.ID), map[string]string{"direction": "down"}, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("move down at boundary: status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMoveAccount_InvalidDirection(t *testing.T) {
+	h := newTestHandler(t)
+	var a models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Assets"}, &a)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodPost, fmt.Sprintf("/accounts/%d/move", a.ID), map[string]string{"direction": "sideways"}, &body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if body["error"] != `direction must be "up" or "down"` {
+		t.Fatalf("body = %v", body)
+	}
+}
+
+func TestMoveAccount_NotFound(t *testing.T) {
+	h := newTestHandler(t)
+
+	rec := do(t, h, http.MethodPost, "/accounts/999999/move", map[string]string{"direction": "up"}, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func balanceFor(balances []models.CurrencyAmount, currencyID int64) (int64, bool) {
 	for _, b := range balances {
 		if b.CurrencyID == currencyID {

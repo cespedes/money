@@ -97,6 +97,20 @@ func (c *Client) DeleteAccount(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, "/accounts/"+strconv.FormatInt(id, 10), nil, nil)
 }
 
+// MoveUp and MoveDown are the two directions MoveAccount accepts.
+const (
+	MoveUp   = "up"
+	MoveDown = "down"
+)
+
+// MoveAccount swaps id's display position with whichever sibling is
+// immediately before (MoveUp) or after (MoveDown) it — a no-op if it's
+// already first/last among its siblings.
+func (c *Client) MoveAccount(ctx context.Context, id int64, direction string) error {
+	body := map[string]string{"direction": direction}
+	return c.do(ctx, http.MethodPost, "/accounts/"+strconv.FormatInt(id, 10)+"/move", body, nil)
+}
+
 func (c *Client) GetAccountLedger(ctx context.Context, accountID int64) ([]LedgerEntry, error) {
 	var entries []LedgerEntry
 	path := "/accounts/" + strconv.FormatInt(accountID, 10) + "/transactions"

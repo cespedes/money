@@ -20,7 +20,7 @@ func NewAccountStore(pool *pgxpool.Pool) *AccountStore {
 }
 
 func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, name, code, parent_id FROM accounts ORDER BY id`)
+	rows, err := s.pool.Query(ctx, `SELECT id, name, code, parent_id, position FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts: %w", err)
 	}
@@ -29,7 +29,7 @@ func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
 	var accounts []models.Account
 	for rows.Next() {
 		var a models.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.Code, &a.ParentID); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Code, &a.ParentID, &a.Position); err != nil {
 			return nil, fmt.Errorf("scan account: %w", err)
 		}
 		accounts = append(accounts, a)
@@ -47,8 +47,8 @@ func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
 func (s *AccountStore) Get(ctx context.Context, id int64) (models.Account, error) {
 	var a models.Account
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, code, parent_id FROM accounts WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Name, &a.Code, &a.ParentID)
+		`SELECT id, name, code, parent_id, position FROM accounts WHERE id = $1`, id,
+	).Scan(&a.ID, &a.Name, &a.Code, &a.ParentID, &a.Position)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return models.Account{}, ErrNotFound
 	}
@@ -151,17 +151,27 @@ func (s *AccountStore) Ledger(ctx context.Context, accountID int64) ([]models.Le
 	return entries, nil
 }
 
+// Create inserts a, assigning it the next position after its
+// highest-positioned sibling (or 0 if it has none) — new accounts start
+// out last among their siblings; a.Position is ignored.
 func (s *AccountStore) Create(ctx context.Context, a models.Account) (models.Account, error) {
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO accounts (name, code, parent_id) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO accounts (name, code, parent_id, position)
+		 VALUES ($1, $2, $3, COALESCE(
+		     (SELECT MAX(position) + 1 FROM accounts WHERE parent_id IS NOT DISTINCT FROM $3), 0))
+		 RETURNING id, position`,
 		a.Name, a.Code, a.ParentID,
-	).Scan(&a.ID)
+	).Scan(&a.ID, &a.Position)
 	if err != nil {
 		return models.Account{}, fmt.Errorf("insert account: %w", err)
 	}
 	return a, nil
 }
 
+// Update leaves a.Position untouched in the database regardless of what
+// it's set to — position only ever changes via Move, so that reordering
+// can't be lost by an unrelated field edit that doesn't happen to know
+// the account's current position.
 func (s *AccountStore) Update(ctx context.Context, a models.Account) (models.Account, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE accounts SET name = $1, code = $2, parent_id = $3 WHERE id = $4`,
@@ -174,6 +184,86 @@ func (s *AccountStore) Update(ctx context.Context, a models.Account) (models.Acc
 		return models.Account{}, ErrNotFound
 	}
 	return a, nil
+}
+
+// MoveUp and MoveDown are the two directions Move accepts.
+const (
+	MoveUp   = "up"
+	MoveDown = "down"
+)
+
+// Move swaps id's position with whichever sibling (another account with
+// the same parent_id, including other roots when parent_id is NULL) is
+// immediately before it (MoveUp) or after it (MoveDown) in position
+// order. It's a no-op, not an error, if id is already first/last among
+// its siblings. Returns ErrNotFound if id doesn't exist.
+func (s *AccountStore) Move(ctx context.Context, id int64, direction string) error {
+	var parentID *int64
+	err := s.pool.QueryRow(ctx, `SELECT parent_id FROM accounts WHERE id = $1`, id).Scan(&parentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("query account: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, position FROM accounts WHERE parent_id IS NOT DISTINCT FROM $1 ORDER BY position, id`,
+		parentID)
+	if err != nil {
+		return fmt.Errorf("query siblings: %w", err)
+	}
+	type sibling struct {
+		id       int64
+		position int64
+	}
+	var siblings []sibling
+	for rows.Next() {
+		var sib sibling
+		if err := rows.Scan(&sib.id, &sib.position); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan sibling: %w", err)
+		}
+		siblings = append(siblings, sib)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate siblings: %w", err)
+	}
+	rows.Close()
+
+	index := -1
+	for i, sib := range siblings {
+		if sib.id == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return ErrNotFound
+	}
+
+	swapWith := index - 1
+	if direction == MoveDown {
+		swapWith = index + 1
+	}
+	if swapWith < 0 || swapWith >= len(siblings) {
+		return nil // already first/last: no-op
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	a, b := siblings[index], siblings[swapWith]
+	if _, err := tx.Exec(ctx, `UPDATE accounts SET position = $1 WHERE id = $2`, b.position, a.id); err != nil {
+		return fmt.Errorf("update position: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE accounts SET position = $1 WHERE id = $2`, a.position, b.id); err != nil {
+		return fmt.Errorf("update position: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *AccountStore) Delete(ctx context.Context, id int64) error {

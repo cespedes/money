@@ -13,10 +13,13 @@ import (
 // summed per currency; an account with no entries in a given currency has
 // no entry for it here.
 type Account struct {
-	ID       int64            `json:"id"`
-	Name     string           `json:"name"`
-	Code     *string          `json:"code,omitempty"`
-	ParentID *int64           `json:"parent_id,omitempty"`
+	ID       int64   `json:"id"`
+	Name     string  `json:"name"`
+	Code     *string `json:"code,omitempty"`
+	ParentID *int64  `json:"parent_id,omitempty"`
+	// Position orders this account for display among its siblings (see
+	// orderAccountsAsTree); only ever changed via Client.MoveAccount.
+	Position int64            `json:"position"`
 	Balances []CurrencyAmount `json:"balances"`
 }
 

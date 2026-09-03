@@ -177,7 +177,7 @@ func (m App) footer() string {
 	base = fmt.Sprintf("%s  •  d: delete  •  q: quit", base)
 	switch m.active {
 	case tabAccounts:
-		base = fmt.Sprintf("%s  •  enter: view transactions", base)
+		base = fmt.Sprintf("%s  •  shift+↑/↓: move  •  enter: view transactions", base)
 	case tabTransactions:
 		base = fmt.Sprintf("%s  •  enter: view details", base)
 	}

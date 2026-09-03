@@ -65,6 +65,13 @@ type accountsModel struct {
 	// the parent dropdown can be resized again when the account list
 	// changes (see syncParentPickerHeight).
 	windowHeight int
+
+	// selectAfterReload, when set, is an account ID whose row the cursor
+	// should jump back to the next time accountsLoadedMsg arrives — used
+	// after a move (see "shift+up"/"shift+down" in updateList) so the
+	// moved account visibly stays selected instead of the cursor
+	// pointing at whichever account now occupies its old row index.
+	selectAfterReload *int64
 }
 
 const (
@@ -238,6 +245,15 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		}
 		m.table.SetRows(nodesToRows(nodes, m.currencies))
 		m.syncParentPickerHeight()
+		if m.selectAfterReload != nil {
+			for i, a := range m.rows {
+				if a.ID == *m.selectAfterReload {
+					m.table.SetCursor(i)
+					break
+				}
+			}
+			m.selectAfterReload = nil
+		}
 		return m, nil
 
 	case currenciesLoadedMsg:
@@ -338,6 +354,22 @@ func (m accountsModel) updateList(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.mode = accountsModeConfirmDelete
 		return m, nil
+	case "shift+up", "shift+down":
+		row := m.table.Cursor()
+		if row < 0 || row >= len(m.rows) {
+			return m, nil
+		}
+		direction := client.MoveUp
+		if msg.String() == "shift+down" {
+			direction = client.MoveDown
+		}
+		id := m.rows[row].ID
+		m.selectAfterReload = &id
+		c := m.client
+		return m, func() tea.Msg {
+			err := c.MoveAccount(context.Background(), id, direction)
+			return accountMutatedMsg{err: err}
+		}
 	case "enter":
 		row := m.table.Cursor()
 		if row < 0 || row >= len(m.rows) {
@@ -588,7 +620,9 @@ type accountTreeNode struct {
 
 // orderAccountsAsTree walks the parent/child forest depth-first: root
 // accounts (no parent) first, each one immediately followed by its own
-// children, and siblings at every level ordered by ID.
+// children, and siblings at every level ordered by Position (see
+// AccountStore.Move) — ID only breaks a tie, which position values
+// assigned by the API should never actually produce.
 func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 	childrenByParent := make(map[int64][]client.Account)
 	var roots []client.Account
@@ -599,9 +633,9 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 			childrenByParent[*a.ParentID] = append(childrenByParent[*a.ParentID], a)
 		}
 	}
-	sortAccountsByID(roots)
+	sortAccountsByPosition(roots)
 	for id := range childrenByParent {
-		sortAccountsByID(childrenByParent[id])
+		sortAccountsByPosition(childrenByParent[id])
 	}
 
 	var nodes []accountTreeNode
@@ -631,7 +665,7 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 			leftover = append(leftover, a)
 		}
 	}
-	sortAccountsByID(leftover)
+	sortAccountsByPosition(leftover)
 	for _, a := range leftover {
 		walk(a, 0)
 	}
@@ -639,8 +673,13 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 	return nodes
 }
 
-func sortAccountsByID(accounts []client.Account) {
-	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID < accounts[j].ID })
+func sortAccountsByPosition(accounts []client.Account) {
+	sort.Slice(accounts, func(i, j int) bool {
+		if accounts[i].Position != accounts[j].Position {
+			return accounts[i].Position < accounts[j].Position
+		}
+		return accounts[i].ID < accounts[j].ID
+	})
 }
 
 // rightAlign right-justifies s within width, for "Value"/"Balance" table

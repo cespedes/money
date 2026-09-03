@@ -10,6 +10,12 @@ type Account struct {
 	Name     string  `json:"name"`
 	Code     *string `json:"code,omitempty"`
 	ParentID *int64  `json:"parent_id,omitempty"`
+	// Position orders this account for display among its siblings (other
+	// accounts sharing the same ParentID, including other roots when it's
+	// nil) — lowest first. Assigned automatically on creation and changed
+	// only via AccountStore.Move; meaningless to compare across accounts
+	// with different parents.
+	Position int64 `json:"position"`
 	// Balances is this account's own transaction entries (not including
 	// any child accounts'), summed per currency, as returned by List and
 	// Get. An account with no entries in a given currency has no entry

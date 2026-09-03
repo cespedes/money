@@ -12,7 +12,12 @@ A small double-entry accounting application, made of three parts:
 
 - **Accounts** have a `name`, an optional `code`, and an optional `parent_id`
   pointing to another account, so accounts can be organized into a hierarchy
-  (a chart of accounts). The API also reports each account's `balances`: one
+  (a chart of accounts). Each also has a `position`, ordering it for display
+  among its siblings (other accounts with the same `parent_id`, including
+  other root accounts when it's null) — assigned automatically on creation
+  (after its last sibling) and otherwise changed only by explicitly moving
+  an account up or down (`POST /accounts/{id}/move`), never by a plain
+  update. The API also reports each account's `balances`: one
   `(currency_id, amount)` pair per currency it has entries in — its own
   entries only, not including any child accounts' — with no entry at all for
   a currency it's never been posted in.
@@ -127,6 +132,7 @@ All endpoints accept and return JSON.
 | PUT    | `/accounts/{id}`    | Update an account                         |
 | DELETE | `/accounts/{id}`    | Delete an account                         |
 | GET    | `/accounts/{id}/transactions` | List an account's ledger (see below) |
+| POST   | `/accounts/{id}/move` | Move an account up/down among its siblings (see below) |
 | GET    | `/transactions`     | List transactions (with their entries)    |
 | POST   | `/transactions`     | Create a transaction (entries must sum to zero per currency) |
 | GET    | `/transactions/{id}`| Get a transaction (with its entries)      |
@@ -170,6 +176,11 @@ that same currency* through that point — e.g.
 A transaction posting to the account in more than one currency contributes
 one row per currency.
 
+`POST /accounts/{id}/move` takes `{"direction": "up"}` or `{"direction":
+"down"}` and swaps that account's `position` with whichever sibling is
+immediately before/after it — a no-op, not an error, if it's already
+first/last among its siblings.
+
 ## TUI
 
 `Tab`/`Shift+Tab` cycle through the Accounts, Transactions, and Currencies
@@ -178,7 +189,10 @@ refreshes, `Enter` opens a transaction's entries or an account's ledger
 (Currencies has no such drill-down). `Esc` cancels a form or backs out of
 a ledger/detail view, `q` quits. Accounts and Currencies also support `e`
 to edit the selected record and `d` to delete it; Transactions only
-supports `d` (no edit).
+supports `d` (no edit). Accounts additionally support `Shift+↑`/`Shift+↓`
+to move the selected account up/down among its siblings (see `POST
+/accounts/{id}/move` above) — the selection follows the account as it
+moves, and moving it past the first/last sibling is a no-op.
 
 Editing reuses the same pop-up as creating (see below), pre-filled with
 the selected record's current values, and submits a PUT instead of a POST

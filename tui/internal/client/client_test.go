@@ -90,6 +90,26 @@ func TestUpdateAccount(t *testing.T) {
 	}
 }
 
+func TestMoveAccount(t *testing.T) {
+	var gotBody map[string]string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/accounts/5/move" {
+			t.Errorf("got %s %s, want POST /accounts/5/move", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	if err := c.MoveAccount(context.Background(), 5, client.MoveUp); err != nil {
+		t.Fatalf("MoveAccount: %v", err)
+	}
+	if gotBody["direction"] != "up" {
+		t.Fatalf("request body = %v", gotBody)
+	}
+}
+
 func TestDeleteAccount(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/accounts/42" {

@@ -38,6 +38,10 @@ func keyPress(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "shift+up":
+		return tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}
+	case "shift+down":
+		return tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift}
 	case "ctrl+c":
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	default:
@@ -155,7 +159,8 @@ func TestOrderAccountsAsTree(t *testing.T) {
 }
 
 func TestOrderAccountsAsTree_SiblingsSortedByID(t *testing.T) {
-	// Root accounts and a set of children both given out of ID order.
+	// Root accounts and a set of children both given out of ID order,
+	// all sharing the same (zero) Position: ID is the tiebreak.
 	root := client.Account{ID: 10, Name: "Assets"}
 	c3 := client.Account{ID: 3, Name: "C", ParentID: &root.ID}
 	c1 := client.Account{ID: 1, Name: "A", ParentID: &root.ID}
@@ -169,6 +174,34 @@ func TestOrderAccountsAsTree_SiblingsSortedByID(t *testing.T) {
 		gotIDs = append(gotIDs, n.account.ID)
 	}
 	want := []int64{5, 10, 1, 2, 3} // roots by ID (5, 10), then 10's children by ID
+	if len(gotIDs) != len(want) {
+		t.Fatalf("got %v, want %v", gotIDs, want)
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Fatalf("got %v, want %v", gotIDs, want)
+		}
+	}
+}
+
+// TestOrderAccountsAsTree_SiblingsSortedByPosition is a regression test:
+// Position, not ID, is the primary sort key among siblings — as it would
+// be after a move (see AccountStore.Move) leaves a lower-ID account with
+// a higher Position than its sibling.
+func TestOrderAccountsAsTree_SiblingsSortedByPosition(t *testing.T) {
+	root := client.Account{ID: 10, Name: "Assets"}
+	// c1 has the lower ID but the higher Position, as if it had been
+	// moved down past c2.
+	c1 := client.Account{ID: 1, Name: "A", ParentID: &root.ID, Position: 1}
+	c2 := client.Account{ID: 2, Name: "B", ParentID: &root.ID, Position: 0}
+
+	nodes := orderAccountsAsTree([]client.Account{c1, root, c2})
+
+	var gotIDs []int64
+	for _, n := range nodes {
+		gotIDs = append(gotIDs, n.account.ID)
+	}
+	want := []int64{10, 2, 1} // root, then children by Position (c2 before c1)
 	if len(gotIDs) != len(want) {
 		t.Fatalf("got %v, want %v", gotIDs, want)
 	}
@@ -563,6 +596,73 @@ func TestAccountsModel_EditSubmitsUpdate(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected a reload command after a successful edit")
+	}
+}
+
+func TestAccountsModel_MoveUpDown(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]string
+	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			gotMethod, gotPath = r.Method, r.URL.Path
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// The reload after a successful move: Liabilities (ID 2) now has
+		// the lower Position, matching what a real move would produce.
+		json.NewEncoder(w).Encode([]client.Account{
+			{ID: 1, Name: "Assets", Position: 1},
+			{ID: 2, Name: "Liabilities", Position: 0},
+		})
+	})
+	m.rows = []client.Account{{ID: 1, Name: "Assets", Position: 0}, {ID: 2, Name: "Liabilities", Position: 1}}
+	m.table.SetRows(accountsToRows(m.rows, m.currencies))
+
+	m, _ = m.Update(keyPress("down")) // cursor -> row 1 (Liabilities)
+	m, cmd := m.Update(keyPress("shift+up"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the move request")
+	}
+	msg := cmd()
+	mutated, ok := msg.(accountMutatedMsg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/accounts/2/move" {
+		t.Fatalf("got %s %s, want POST /accounts/2/move", gotMethod, gotPath)
+	}
+	if gotBody["direction"] != "up" {
+		t.Fatalf("request body = %v", gotBody)
+	}
+
+	m, cmd = m.Update(mutated)
+	if cmd == nil {
+		t.Fatal("expected a reload command after a successful move")
+	}
+	loaded := cmd().(accountsLoadedMsg)
+	m, _ = m.Update(loaded)
+
+	// The moved account (Liabilities) should now be first, and the
+	// cursor should have followed it there rather than staying at row 1.
+	if m.rows[0].ID != 2 {
+		t.Fatalf("m.rows[0] = %+v, want Liabilities (ID 2) first after the move", m.rows[0])
+	}
+	if got := m.table.Cursor(); got != 0 {
+		t.Fatalf("cursor after move = %d, want 0 (following Liabilities)", got)
+	}
+}
+
+func TestAccountsModel_MoveNoRowsIsNoop(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+
+	m, cmd := m.Update(keyPress("shift+up"))
+	if cmd != nil {
+		t.Fatal("expected no command with no rows selected")
+	}
+	m, cmd = m.Update(keyPress("shift+down"))
+	if cmd != nil {
+		t.Fatal("expected no command with no rows selected")
 	}
 }
 

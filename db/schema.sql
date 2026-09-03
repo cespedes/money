@@ -8,11 +8,18 @@
 -- bookkeeping) — amounts in different currencies are never summed
 -- together directly.
 
+-- position orders accounts for display among their siblings — other
+-- accounts with the same parent_id (or, for parent_id IS NULL, other root
+-- accounts) — lowest first. It's assigned automatically on creation
+-- (see AccountStore.Create) and changed only by explicitly moving an
+-- account up or down among its siblings (see AccountStore.Move); it's
+-- otherwise meaningless to compare across different parents.
 CREATE TABLE accounts (
     id        BIGSERIAL PRIMARY KEY,
     name      TEXT NOT NULL,
     code      TEXT,
     parent_id BIGINT REFERENCES accounts (id) ON DELETE RESTRICT,
+    position  BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT accounts_code_unique UNIQUE (code)
 );
 
