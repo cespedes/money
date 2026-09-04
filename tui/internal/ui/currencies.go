@@ -149,6 +149,13 @@ func (m currenciesModel) Update(msg tea.Msg) (currenciesModel, tea.Cmd) {
 		case currenciesModeConfirmDelete:
 			return m.updateConfirmDelete(msg)
 		}
+
+	case tea.PasteMsg:
+		// Only the create/edit form has an actual focused text field (see
+		// updateCreate).
+		if m.mode == currenciesModeCreate {
+			return m.updateCreate(msg)
+		}
 	}
 
 	if m.mode == currenciesModeList {
@@ -199,21 +206,27 @@ func (m currenciesModel) updateList(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
 // navigated the same way as the "new account" form — tab/shift+tab or
 // left/right move focus. Format's value isn't validated here as the user
 // types; that happens once, on submit (see submitCreate/parseCurrencyFormat).
-func (m currenciesModel) updateCreate(msg tea.KeyMsg) (currenciesModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.mode = currenciesModeList
-		m.editingID = nil
-		m.err = ""
-		return m, nil
-	case "enter":
-		return m.submitForm()
-	case "tab", "right":
-		m.setCreateFocus((m.createFocus + 1) % numCurrencyFocusFields)
-		return m, nil
-	case "shift+tab", "left":
-		m.setCreateFocus((m.createFocus + numCurrencyFocusFields - 1) % numCurrencyFocusFields)
-		return m, nil
+// msg is tea.Msg rather than tea.KeyMsg specifically so a tea.PasteMsg
+// (see App.Update) reaches whichever field has focus below, the same as
+// a typed tea.KeyMsg would — the key-command switch above only matches
+// when msg actually is one.
+func (m currenciesModel) updateCreate(msg tea.Msg) (currenciesModel, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc":
+			m.mode = currenciesModeList
+			m.editingID = nil
+			m.err = ""
+			return m, nil
+		case "enter":
+			return m.submitForm()
+		case "tab", "right":
+			m.setCreateFocus((m.createFocus + 1) % numCurrencyFocusFields)
+			return m, nil
+		case "shift+tab", "left":
+			m.setCreateFocus((m.createFocus + numCurrencyFocusFields - 1) % numCurrencyFocusFields)
+			return m, nil
+		}
 	}
 
 	i := fieldForFocus(m.createFocus)

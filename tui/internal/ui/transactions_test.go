@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"money/tui/internal/client"
 )
 
@@ -90,6 +92,20 @@ func TestTransactionsModel_NKeyEntersCreateMode(t *testing.T) {
 	}
 	if !m.Editing() {
 		t.Fatal("Editing() should be true in create mode")
+	}
+}
+
+// TestTransactionsModel_CreatePastesIntoFocusedField is a regression
+// test: a tea.PasteMsg (sent for bracketed-paste terminal input, distinct
+// from tea.KeyMsg) must reach whichever field currently has focus, the
+// same as typing would.
+func TestTransactionsModel_CreatePastesIntoFocusedField(t *testing.T) {
+	m := newTestTransactionsModelWithCurrency(t, nil)
+	m, _ = m.Update(keyPress("n")) // descInput already has focus
+
+	m, _ = m.Update(tea.PasteMsg{Content: "Pasted description"})
+	if got := m.descInput.Value(); got != "Pasted description" {
+		t.Fatalf("descInput value after paste = %q, want %q", got, "Pasted description")
 	}
 }
 

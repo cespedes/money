@@ -201,6 +201,13 @@ func (m transactionsModel) Update(msg tea.Msg) (transactionsModel, tea.Cmd) {
 		case transactionsModeConfirmDelete:
 			return m.updateConfirmDelete(msg)
 		}
+
+	case tea.PasteMsg:
+		// Only the create wizard has an actual focused text field (see
+		// updateCreate).
+		if m.mode == transactionsModeCreate {
+			return m.updateCreate(msg)
+		}
 	}
 
 	if m.mode == transactionsModeList {
@@ -273,9 +280,18 @@ func (m transactionsModel) updateConfirmDelete(msg tea.KeyMsg) (transactionsMode
 // updateCreate drives the "new transaction" wizard: description,
 // timestamp, then repeatedly account, currency (picked from a dropdown,
 // like the account form's parent picker), and amount, until the user
-// declines to add another entry.
-func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.Cmd) {
-	if msg.String() == "esc" {
+// declines to add another entry. msg is tea.Msg rather than tea.KeyMsg
+// specifically so a tea.PasteMsg (see App.Update) reaches whichever
+// field has focus below, the same as a typed tea.KeyMsg would — keyStr
+// is only ever a recognized key command (e.g. "enter") when msg actually
+// is one, "" otherwise, so a paste can never accidentally match one.
+func (m transactionsModel) updateCreate(msg tea.Msg) (transactionsModel, tea.Cmd) {
+	var keyStr string
+	if key, ok := msg.(tea.KeyMsg); ok {
+		keyStr = key.String()
+	}
+
+	if keyStr == "esc" {
 		m.mode = transactionsModeList
 		m.err = ""
 		return m, nil
@@ -283,7 +299,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 
 	switch m.step {
 	case stepDescription:
-		if msg.String() == "enter" {
+		if keyStr == "enter" {
 			if strings.TrimSpace(m.descInput.Value()) == "" {
 				m.err = "description is required"
 				return m, nil
@@ -299,7 +315,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 		return m, cmd
 
 	case stepTimestamp:
-		if msg.String() == "enter" {
+		if keyStr == "enter" {
 			m.err = ""
 			m.timestampInput.Blur()
 			m.step = stepEntryAccount
@@ -311,7 +327,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 		return m, cmd
 
 	case stepEntryAccount:
-		if msg.String() == "enter" {
+		if keyStr == "enter" {
 			id, err := strconv.ParseInt(strings.TrimSpace(m.acctInput.Value()), 10, 64)
 			if err != nil {
 				m.err = "account ID must be a number"
@@ -330,7 +346,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 		return m, cmd
 
 	case stepEntryCurrency:
-		if msg.String() == "enter" {
+		if keyStr == "enter" {
 			row := m.currencyPicker.Cursor()
 			if row < 0 || row >= len(m.currencies) {
 				m.err = "pick a currency"
@@ -349,7 +365,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 		return m, cmd
 
 	case stepEntryValue:
-		if msg.String() == "enter" {
+		if keyStr == "enter" {
 			amount, err := m.currencyIndex[m.pendingCurrencyID].ParseAmount(m.valueInput.Value())
 			if err != nil {
 				m.err = err.Error()
@@ -370,7 +386,7 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 		return m, cmd
 
 	case stepConfirmMore:
-		switch msg.String() {
+		switch keyStr {
 		case "y":
 			m.step = stepEntryAccount
 			m.acctInput.Focus()

@@ -191,6 +191,31 @@ func TestApp_KeysOnlyReachActiveTab(t *testing.T) {
 	}
 }
 
+// TestApp_PasteOnlyReachesActiveTab mirrors TestApp_KeysOnlyReachActiveTab
+// for tea.PasteMsg: it must be routed the same way tea.KeyMsg is, or a
+// paste meant for the active tab's focused field could instead land in a
+// field on a tab that isn't even visible.
+func TestApp_PasteOnlyReachesActiveTab(t *testing.T) {
+	m := newTestApp(t)
+	// Simulate the Accounts tab having a focused field left over from
+	// before the user switched away from it.
+	m.accounts.mode = accountsModeCreate
+	m.accounts.setCreateFocus(focusName)
+	m.active = tabTransactions
+	m.transactions.mode = transactionsModeCreate
+	m.transactions.descInput.Focus()
+
+	updated, _ := m.Update(tea.PasteMsg{Content: "pasted text"})
+	m = updated.(App)
+
+	if got := m.accounts.inputs[fieldAccountName].Value(); got != "" {
+		t.Errorf("Accounts Name field = %q, want empty (paste should not reach the inactive tab)", got)
+	}
+	if got := m.transactions.descInput.Value(); got != "pasted text" {
+		t.Errorf("Transactions descInput = %q, want %q (paste should reach the active tab)", got, "pasted text")
+	}
+}
+
 func TestApp_NonKeyMessagesReachBothTabs(t *testing.T) {
 	m := newTestApp(t)
 	msg := accountsLoadedMsg{accounts: nil}

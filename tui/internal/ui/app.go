@@ -81,16 +81,16 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Keyboard input only goes to the active tab; the other tabs are
 		// not visible and must not react to keystrokes meant for this one.
-		var cmd tea.Cmd
-		switch m.active {
-		case tabAccounts:
-			m.accounts, cmd = m.accounts.Update(msg)
-		case tabTransactions:
-			m.transactions, cmd = m.transactions.Update(msg)
-		case tabCurrencies:
-			m.currencies, cmd = m.currencies.Update(msg)
-		}
-		return m, cmd
+		return m.updateActiveTab(msg)
+
+	case tea.PasteMsg:
+		// Pasted text is keyboard input too, typed into whichever field
+		// currently has focus — it must reach only the active tab, for
+		// the same reason tea.KeyMsg does above: an inactive tab can
+		// still have a form open (switching tabs doesn't reset it), and
+		// broadcasting a paste to it would insert the pasted text into a
+		// field the user can't even see.
+		return m.updateActiveTab(msg)
 	}
 
 	// Any other message (async load results, cursor blinks, ...) must
@@ -102,6 +102,22 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.transactions, cmd2 = m.transactions.Update(msg)
 	m.currencies, cmd3 = m.currencies.Update(msg)
 	return m, tea.Batch(cmd1, cmd2, cmd3)
+}
+
+// updateActiveTab routes msg to whichever tab is currently active only —
+// for a message that represents keyboard input (tea.KeyMsg, tea.PasteMsg),
+// which must never reach a tab that isn't visible.
+func (m App) updateActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.active {
+	case tabAccounts:
+		m.accounts, cmd = m.accounts.Update(msg)
+	case tabTransactions:
+		m.transactions, cmd = m.transactions.Update(msg)
+	case tabCurrencies:
+		m.currencies, cmd = m.currencies.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m App) currentEditing() bool {

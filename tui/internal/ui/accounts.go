@@ -536,6 +536,16 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		case accountsModeLedgerCreate:
 			return m.updateLedgerCreate(msg)
 		}
+
+	case tea.PasteMsg:
+		// Only the two modes with an actual focused text field can do
+		// anything with pasted text (see updateCreate/updateLedgerCreate).
+		switch m.mode {
+		case accountsModeCreate:
+			return m.updateCreate(msg)
+		case accountsModeLedgerCreate:
+			return m.updateLedgerCreate(msg)
+		}
 	}
 
 	switch m.mode {
@@ -692,21 +702,26 @@ func (m *accountsModel) setLedgerEntryFocus(f ledgerEntryFocus) {
 // updateLedgerCreate handles the ledger's "new entry" form: tab/shift+tab
 // are the only way to move between its seven fields (matching the
 // account form's own convention), enter submits from any of them, and
-// esc cancels back to the ledger view.
-func (m accountsModel) updateLedgerCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.mode = accountsModeLedger
-		m.err = ""
-		return m, nil
-	case "enter":
-		return m.submitLedgerEntry()
-	case "tab":
-		m.setLedgerEntryFocus((m.ledgerEntryFocus + 1) % numLedgerEntryFocusFields)
-		return m, nil
-	case "shift+tab":
-		m.setLedgerEntryFocus((m.ledgerEntryFocus + numLedgerEntryFocusFields - 1) % numLedgerEntryFocusFields)
-		return m, nil
+// esc cancels back to the ledger view. msg is tea.Msg rather than
+// tea.KeyMsg specifically so a tea.PasteMsg (see App.Update) reaches
+// whichever field has focus below, the same as a typed tea.KeyMsg would
+// — the key-command switch above only matches when msg actually is one.
+func (m accountsModel) updateLedgerCreate(msg tea.Msg) (accountsModel, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc":
+			m.mode = accountsModeLedger
+			m.err = ""
+			return m, nil
+		case "enter":
+			return m.submitLedgerEntry()
+		case "tab":
+			m.setLedgerEntryFocus((m.ledgerEntryFocus + 1) % numLedgerEntryFocusFields)
+			return m, nil
+		case "shift+tab":
+			m.setLedgerEntryFocus((m.ledgerEntryFocus + numLedgerEntryFocusFields - 1) % numLedgerEntryFocusFields)
+			return m, nil
+		}
 	}
 
 	switch m.ledgerEntryFocus {
@@ -833,22 +848,27 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 // whichever text field has focus (or do nothing while Parent's dropdown
 // has focus, since that's navigated with up/down like any other table).
 // While Parent has focus, that dropdown of "(none)" plus the existing
-// accounts is shown (see createPopup).
-func (m accountsModel) updateCreate(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.mode = accountsModeList
-		m.editingID = nil
-		m.err = ""
-		return m, nil
-	case "enter":
-		return m.submitForm()
-	case "tab":
-		m.setCreateFocus((m.createFocus + 1) % 3)
-		return m, nil
-	case "shift+tab":
-		m.setCreateFocus((m.createFocus + 2) % 3) // +2 mod 3 == -1 mod 3
-		return m, nil
+// accounts is shown (see createPopup). msg is tea.Msg rather than
+// tea.KeyMsg specifically so a tea.PasteMsg (see App.Update) reaches
+// whichever field has focus below, the same as a typed tea.KeyMsg would
+// — the key-command switch above only matches when msg actually is one.
+func (m accountsModel) updateCreate(msg tea.Msg) (accountsModel, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc":
+			m.mode = accountsModeList
+			m.editingID = nil
+			m.err = ""
+			return m, nil
+		case "enter":
+			return m.submitForm()
+		case "tab":
+			m.setCreateFocus((m.createFocus + 1) % 3)
+			return m, nil
+		case "shift+tab":
+			m.setCreateFocus((m.createFocus + 2) % 3) // +2 mod 3 == -1 mod 3
+			return m, nil
+		}
 	}
 
 	switch m.createFocus {

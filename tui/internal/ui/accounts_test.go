@@ -345,6 +345,35 @@ func TestAccountsModel_LeftRightEditWithinFieldNotFocus(t *testing.T) {
 	}
 }
 
+// TestAccountsModel_CreatePastesIntoFocusedField is a regression test: a
+// tea.PasteMsg (sent for bracketed-paste terminal input, distinct from
+// tea.KeyMsg) must reach whichever field currently has focus, the same
+// as typing would.
+func TestAccountsModel_CreatePastesIntoFocusedField(t *testing.T) {
+	m := newTestAccountsModel(t, nil)
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Name
+
+	m, _ = m.Update(tea.PasteMsg{Content: "Pasted Name"})
+	if got := m.inputs[fieldAccountName].Value(); got != "Pasted Name" {
+		t.Fatalf("Name value after paste = %q, want %q", got, "Pasted Name")
+	}
+}
+
+// TestAccountsModel_LedgerEntryPastesIntoFocusedField mirrors
+// TestAccountsModel_CreatePastesIntoFocusedField for the ledger's "new
+// entry" pop-up.
+func TestAccountsModel_LedgerEntryPastesIntoFocusedField(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n"))
+	m, _ = m.Update(keyPress("tab")) // -> Description
+
+	m, _ = m.Update(tea.PasteMsg{Content: "Pasted description"})
+	if got := m.ledgerEntryInputs[fieldEntryDescription].Value(); got != "Pasted description" {
+		t.Fatalf("Description value after paste = %q, want %q", got, "Pasted description")
+	}
+}
+
 func TestAccountsModel_CreateParentFieldUpDown(t *testing.T) {
 	m := newTestAccountsModel(t, nil)
 	m.rows = []client.Account{{ID: 1, Name: "Assets"}, {ID: 2, Name: "Liabilities"}}
