@@ -306,11 +306,8 @@ func (m *accountsModel) SetSize(width, height int) {
 	if height > 5 {
 		m.table.SetHeight(height)
 	}
-	// The ledger view has its own two-line header ("Transactions for #N
-	// Name" plus a blank line) above the table, unlike the plain list, so
-	// it needs two fewer rows to keep the footer on screen.
-	if height > 7 {
-		m.ledgerTable.SetHeight(height - 2)
+	if height > 5 {
+		m.ledgerTable.SetHeight(height)
 	}
 	m.windowHeight = height
 	m.windowWidth = width
@@ -931,6 +928,35 @@ func parentSummary(parentID *int64, options []accountTreeNode) string {
 	return "(unknown)"
 }
 
+// accountBreadcrumb renders account's place in the hierarchy as a
+// " → "-joined path from its outermost ancestor down to itself (e.g.
+// "Assets → Cash → Juan"), walking up ParentID through accounts — used
+// for the ledger view's title (see App.title) in place of a separate
+// subtitle repeating the account's name. Stops (without including
+// anything further up) at an ancestor missing from accounts or already
+// seen, which shouldn't happen outside a parent_id cycle predating the
+// API's own cycle check.
+func accountBreadcrumb(account client.Account, accounts []client.Account) string {
+	byID := make(map[int64]client.Account, len(accounts))
+	for _, a := range accounts {
+		byID[a.ID] = a
+	}
+
+	names := []string{account.Name}
+	visited := map[int64]bool{account.ID: true}
+	current := account
+	for current.ParentID != nil {
+		parent, ok := byID[*current.ParentID]
+		if !ok || visited[parent.ID] {
+			break
+		}
+		names = append([]string{parent.Name}, names...)
+		visited[parent.ID] = true
+		current = parent
+	}
+	return strings.Join(names, " → ")
+}
+
 // parentCursorFor is selectedParentID's inverse, used to preselect an
 // account's current parent when opening it for editing (see startEdit).
 // Falls back to 0 ("(none)") if parentID isn't found in options — e.g. it
@@ -1452,9 +1478,11 @@ func (m accountsModel) View() string {
 		// accountsModeLedgerCreate shows its own pop-up (see
 		// ledgerEntryPopup), composited over this same ledger view by
 		// App.View — so the ledger table is still the right thing to
-		// render underneath it here.
-		b.WriteString(formLabelStyle.Render(fmt.Sprintf("Transactions for #%d %s", m.ledgerAccount.ID, m.ledgerAccount.Name)))
-		b.WriteString("\n\n")
+		// render underneath it here. There's no separate subtitle naming
+		// the account here (there used to be one, "Transactions for #N
+		// Name") — App.title puts its breadcrumb path in the app's own
+		// title line instead (see accountBreadcrumb), so it isn't
+		// repeated.
 		b.WriteString(m.ledgerTable.View())
 	default:
 		// accountsModeCreate shows its own pop-up (see createPopup),

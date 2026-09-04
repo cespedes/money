@@ -258,6 +258,34 @@ func TestApp_TitleTracksActiveTab(t *testing.T) {
 	}
 }
 
+// TestApp_TitleShowsBreadcrumbInLedgerView checks that viewing an
+// account's ledger replaces the title's usual "Accounts" with that
+// account's breadcrumb path (see accountBreadcrumb) — and that the
+// ledger view itself no longer repeats it as a separate subtitle line.
+func TestApp_TitleShowsBreadcrumbInLedgerView(t *testing.T) {
+	m := newTestApp(t)
+	assets := client.Account{ID: 1, Name: "Assets"}
+	cash := client.Account{ID: 2, Name: "Cash", ParentID: &assets.ID}
+	m.accounts.rows = []client.Account{assets, cash}
+	m.accounts.table.SetRows(accountsToRows(m.accounts.rows, nil))
+	m.accounts.table.SetCursor(1) // Cash
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(App)
+	if m.accounts.mode != accountsModeLedger {
+		t.Fatalf("accounts.mode = %v, want accountsModeLedger", m.accounts.mode)
+	}
+
+	v := m.View()
+	want := "Money — Transactions in Assets → Cash"
+	if !strings.Contains(v.Content, want) {
+		t.Errorf("view content = %q, want the title to say %q", v.Content, want)
+	}
+	if strings.Contains(v.Content, "Transactions for") {
+		t.Errorf("view content = %q, should not repeat a separate subtitle", v.Content)
+	}
+}
+
 // TestApp_CreatePopupOverlaysBackground checks that opening the
 // new-account form composites a pop-up over the accounts list, rather
 // than replacing it: both the list and the pop-up must show up in the

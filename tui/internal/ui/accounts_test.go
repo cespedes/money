@@ -233,6 +233,35 @@ func TestOrderAccountsAsTree_CycleIsNotDropped(t *testing.T) {
 	}
 }
 
+func TestAccountBreadcrumb(t *testing.T) {
+	assets := client.Account{ID: 1, Name: "Assets"}
+	cash := client.Account{ID: 2, Name: "Cash", ParentID: &assets.ID}
+	juan := client.Account{ID: 3, Name: "Juan", ParentID: &cash.ID}
+	accounts := []client.Account{cash, juan, assets} // deliberately out of order
+
+	if got, want := accountBreadcrumb(juan, accounts), "Assets → Cash → Juan"; got != want {
+		t.Errorf("accountBreadcrumb(Juan) = %q, want %q", got, want)
+	}
+	if got, want := accountBreadcrumb(assets, accounts), "Assets"; got != want {
+		t.Errorf("accountBreadcrumb(Assets, a root) = %q, want %q", got, want)
+	}
+}
+
+// TestAccountBreadcrumb_CycleDoesNotLoopForever is a regression test:
+// accountBreadcrumb must stop rather than loop forever if the data
+// somehow contains a parent_id cycle (which the API itself rejects, but
+// this shouldn't hang on data that predates that check).
+func TestAccountBreadcrumb_CycleDoesNotLoopForever(t *testing.T) {
+	aID, bID := int64(1), int64(2)
+	a := client.Account{ID: aID, Name: "A", ParentID: &bID}
+	b := client.Account{ID: bID, Name: "B", ParentID: &aID}
+
+	got := accountBreadcrumb(a, []client.Account{a, b})
+	if got != "B → A" {
+		t.Errorf("accountBreadcrumb with a cycle = %q, want %q", got, "B → A")
+	}
+}
+
 func TestAccountsModel_LoadAccounts(t *testing.T) {
 	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Account{{ID: 1, Name: "Cash"}})
@@ -1172,7 +1201,7 @@ func TestAccountsModel_LedgerEntryPopup(t *testing.T) {
 		t.Errorf("popup should still show the chosen Other account as text, got:\n%s", popup)
 	}
 
-	if got := m.View(); !strings.Contains(got, "Transactions for") {
+	if got := m.View(); !strings.Contains(got, "Timestamp") {
 		t.Errorf("View() should still render the ledger table under the pop-up, got:\n%s", got)
 	}
 }
@@ -1779,11 +1808,11 @@ func TestAccountsModel_SetSize(t *testing.T) {
 	}
 	got20 := m.table.Height()
 
-	// The ledger view has its own two-line header above the table (unlike
-	// the plain list), so it needs two fewer rows to keep the footer
-	// visible on screen.
-	if got := m.ledgerTable.Height(); got != got20-2 {
-		t.Errorf("ledgerTable height = %d, want %d (table height - 2)", got, got20-2)
+	// The ledger table has no subtitle of its own above it (the ledger
+	// view's account name lives in the app's title instead — see
+	// App.title), so it gets the same height as the plain list.
+	if got := m.ledgerTable.Height(); got != got20 {
+		t.Errorf("ledgerTable height = %d, want %d (same as table)", got, got20)
 	}
 
 	// Too small a height must not be applied, to keep the table usable.

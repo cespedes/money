@@ -120,6 +120,21 @@ func (m App) updateActiveTab(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// title is the app's own title line (see View()): normally "Money — "
+// plus the active tab's own name, except while viewing an account's
+// ledger, where it instead names that account's place in the hierarchy
+// (see accountBreadcrumb) — in place of a separate subtitle the ledger
+// view used to show above its table.
+func (m App) title() string {
+	if m.active == tabAccounts {
+		switch m.accounts.mode {
+		case accountsModeLedger, accountsModeLedgerCreate:
+			return "Money — Transactions in " + accountBreadcrumb(m.accounts.ledgerAccount, m.accounts.rows)
+		}
+	}
+	return "Money — " + tabLabels[m.active]
+}
+
 func (m App) currentEditing() bool {
 	switch m.active {
 	case tabAccounts:
@@ -134,7 +149,7 @@ func (m App) currentEditing() bool {
 func (m App) View() tea.View {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Money — " + tabLabels[m.active]))
+	b.WriteString(titleStyle.Render(m.title()))
 	b.WriteString("\n\n")
 
 	switch m.active {
