@@ -62,13 +62,13 @@ func TestMinorToDecimal(t *testing.T) {
 		decimalPlaces int
 		want          json.Number
 	}{
-		{"whole number: trailing zeros trimmed", 1000, 2, "10"},
-		{"exact half", 1050, 2, "10.5"},
+		{"whole number: still shows every decimal place", 1000, 2, "10.00"},
+		{"exact half", 1050, 2, "10.50"},
 		{"full precision", 1055, 2, "10.55"},
-		{"negative", -1050, 2, "-10.5"},
+		{"negative", -1050, 2, "-10.50"},
 		{"zero decimal places", 1234, 0, "1234"},
-		{"zero", 0, 2, "0"},
-		{"fractional only", 50, 2, "0.5"},
+		{"zero", 0, 2, "0.00"},
+		{"fractional only", 50, 2, "0.50"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -223,9 +223,9 @@ func (c Currency) ToMinorUnits(n json.Number) (int64, error) {
 
 // FromMinorUnits is ToMinorUnits' inverse: minor (an integer number of
 // this currency's minor units) as a json.Number in the API's wire format
-// (plain '.' decimal syntax), with trailing zero decimal digits trimmed
-// (and the decimal point dropped for a whole number) — for constructing
-// a CurrencyAmount/Entry/LedgerEntry to send to the API.
+// (plain '.' decimal syntax). It always shows exactly DecimalPlaces
+// decimal digits (e.g. "10.00", not "10") — for constructing a
+// CurrencyAmount/Entry/LedgerEntry to send to the API.
 func (c Currency) FromMinorUnits(minor int64) json.Number {
 	sign := ""
 	if minor < 0 {
@@ -242,10 +242,6 @@ func (c Currency) FromMinorUnits(minor int64) json.Number {
 	}
 	frac := strconv.FormatInt(minor%scale, 10)
 	frac = strings.Repeat("0", c.DecimalPlaces-len(frac)) + frac
-	frac = strings.TrimRight(frac, "0")
-	if frac == "" {
-		return json.Number(sign + whole)
-	}
 	return json.Number(sign + whole + "." + frac)
 }
 

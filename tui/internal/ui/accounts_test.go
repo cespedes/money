@@ -1246,8 +1246,8 @@ func TestAccountsModel_LedgerEntrySubmitBalancesWhenOtherAmountBlank(t *testing.
 		t.Fatalf("got %d entries, want 2", len(gotTransaction.Entries))
 	}
 	want := []client.Entry{
-		{AccountID: 5, Amount: "5", CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: "-5", CurrencyID: testUSD.ID},
+		{AccountID: 5, Amount: "5.00", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "-5.00", CurrencyID: testUSD.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v", gotTransaction.Entries, want)
@@ -1287,8 +1287,8 @@ func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
 	cmd()
 
 	want := []client.Entry{
-		{AccountID: 5, Amount: "5", CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: "-3", CurrencyID: testUSD.ID},
+		{AccountID: 5, Amount: "5.00", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "-3.00", CurrencyID: testUSD.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (an explicit other amount, not auto-balanced)", gotTransaction.Entries, want)
@@ -1323,8 +1323,8 @@ func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
 	cmd()
 
 	want := []client.Entry{
-		{AccountID: 5, Amount: "-10", CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: "9", CurrencyID: eur.ID},
+		{AccountID: 5, Amount: "-10.00", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "9.00", CurrencyID: eur.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (each entry keeping its own row's currency)", gotTransaction.Entries, want)

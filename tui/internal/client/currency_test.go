@@ -159,10 +159,10 @@ func TestCurrency_FromMinorUnits(t *testing.T) {
 		minor int64
 		want  json.Number
 	}{
-		{usd, 1000, "10"},
-		{usd, 1050, "10.5"},
-		{usd, -1050, "-10.5"},
-		{usd, 0, "0"},
+		{usd, 1000, "10.00"},
+		{usd, 1050, "10.50"},
+		{usd, -1050, "-10.50"},
+		{usd, 0, "0.00"},
 		{usd, 5, "0.05"},
 		{jpyLike, 1234, "1234"},
 	}

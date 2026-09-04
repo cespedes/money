@@ -47,14 +47,15 @@ account `balances`) are stored internally as integers in the minor unit of
 their currency (e.g. cents, per that currency's `decimal_places`), never
 floating point, to avoid rounding errors — but on the API's JSON wire
 format they're represented as a decimal JSON number in the currency's own
-major unit, e.g. `10.5` (not `1050`) in a currency with 2 decimal places.
+major unit, e.g. `10.50` (not `1050`) in a currency with 2 decimal places.
 The API converts between the two exactly, via string-digit arithmetic
 rather than floating point, so this involves no rounding; a number with
-more decimal digits than the currency's `decimal_places` is rejected.
-Trailing zero decimal digits are trimmed on the way out (`10.50` is sent
-back as `10`, and a whole number like `10.00` as `10`, with no decimal
-point at all). This doesn't apply to currency prices (see above), which
-are inherently approximate market data rather than ledger quantities.
+more decimal digits than the currency's `decimal_places` is rejected. An
+amount always shows exactly `decimal_places` decimal digits on the way
+out — `1050` is sent back as `10.50`, not `10.5`, and a whole number like
+`1000` as `10.00`, not `10` — matching how money is conventionally
+written. This doesn't apply to currency prices (see above), which are
+inherently approximate market data rather than ledger quantities.
 
 The zero-sum invariant is enforced twice: the API rejects unbalanced
 transactions before writing anything, and the database itself has a
@@ -193,7 +194,7 @@ currency's own entries sum to zero.
 transaction with an entry on it, in timestamp order, with that account's
 own amount (and currency) in the transaction and its running balance *in
 that same currency* through that point — e.g.
-`[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "currency_id": 1, "amount": 10, "balance": 10}]`.
+`[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "currency_id": 1, "amount": 10.00, "balance": 10.00}]`.
 A transaction posting to the account in more than one currency contributes
 one row per currency.
 

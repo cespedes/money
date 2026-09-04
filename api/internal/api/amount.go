@@ -80,11 +80,11 @@ func isDigits(s string) bool {
 
 // minorToDecimal is decimalToMinor's inverse: minor (an integer number of
 // a currency's minor units) as a json.Number in that currency's own
-// units, e.g. 1050 with 2 decimal places -> json.Number("10.5") — built
-// from minor's digits directly (no floating point), and with trailing
-// zero decimal digits trimmed (and the decimal point dropped entirely
-// for a whole number), so an amount reads as an ordinary real number
-// ("10", not "10.00") rather than always showing every decimal place.
+// units, e.g. 1050 with 2 decimal places -> json.Number("10.50") — built
+// from minor's digits directly (no floating point). It always shows
+// exactly decimalPlaces decimal digits (e.g. "10.00", not "10"), matching
+// how money is conventionally written (10.50 EUR, not 10.5 EUR), rather
+// than trimming trailing zeros.
 func minorToDecimal(minor int64, decimalPlaces int) json.Number {
 	sign := ""
 	if minor < 0 {
@@ -101,10 +101,6 @@ func minorToDecimal(minor int64, decimalPlaces int) json.Number {
 	}
 	frac := strconv.FormatInt(minor%scale, 10)
 	frac = strings.Repeat("0", decimalPlaces-len(frac)) + frac
-	frac = strings.TrimRight(frac, "0")
-	if frac == "" {
-		return json.Number(sign + whole)
-	}
 	return json.Number(sign + whole + "." + frac)
 }
 
