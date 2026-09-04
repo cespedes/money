@@ -1118,9 +1118,11 @@ func parentDropdownRows(options []accountTreeNode) []table.Row {
 	return rows
 }
 
-// accountsToRows lays accounts out as an indented tree: each account is
-// immediately followed by its own children, and accounts at the same
-// level (no parent, or the same parent) are ordered by ID.
+// accountsToRows lays accounts out as a tree, drawn with connector lines
+// (see accountTreeNode.prefix) rather than plain indentation: each
+// account is immediately followed by its own children, and accounts at
+// the same level (no parent, or the same parent) are ordered by
+// Position.
 func accountsToRows(accounts []client.Account, currencies currencyByID) []table.Row {
 	return nodesToRows(orderAccountsAsTree(accounts), currencies)
 }
@@ -1133,7 +1135,7 @@ func nodesToRows(nodes []accountTreeNode, currencies currencyByID) []table.Row {
 		if a.Code != nil {
 			code = *a.Code
 		}
-		name := strings.Repeat("  ", node.depth) + a.Name
+		name := node.prefix + a.Name
 		rows = append(rows, table.Row{code, name, formatBalances(a.Balances, currencies)})
 	}
 	return rows
@@ -1156,6 +1158,14 @@ func formatBalances(balances []client.CurrencyAmount, currencies currencyByID) s
 type accountTreeNode struct {
 	account client.Account
 	depth   int
+	// prefix is the tree-line connector to draw before this node's own
+	// name (e.g. "├── ", "└── ", or "" for a root — see
+	// orderAccountsAsTree) — used by accountsToRows/nodesToRows to draw
+	// the accounts list as an actual tree rather than plain indentation.
+	// parentDropdownRows deliberately ignores this and indents by depth
+	// instead: a picker is for choosing one account, not surveying the
+	// hierarchy's shape, so the plainer form reads better there.
+	prefix string
 }
 
 // orderAccountsAsTree walks the parent/child forest depth-first: root
@@ -1180,19 +1190,40 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 
 	var nodes []accountTreeNode
 	visited := make(map[int64]bool, len(accounts))
-	var walk func(a client.Account, depth int)
-	walk = func(a client.Account, depth int) {
+	// walk's ancestorPrefix is the run of "│   "/"    " inherited from
+	// this node's own ancestors (empty at depth 0, since roots are laid
+	// out as an unconnected forest rather than one implicit root — see
+	// accountTreeNode.prefix); isLast is whether a is the last of its
+	// own siblings, which decides both a's own connector and whether its
+	// ancestorPrefix continues a vertical bar down to its children.
+	var walk func(a client.Account, depth int, ancestorPrefix string, isLast bool)
+	walk = func(a client.Account, depth int, ancestorPrefix string, isLast bool) {
 		if visited[a.ID] {
 			return // guards against a parent_id cycle
 		}
 		visited[a.ID] = true
-		nodes = append(nodes, accountTreeNode{account: a, depth: depth})
-		for _, child := range childrenByParent[a.ID] {
-			walk(child, depth+1)
+
+		prefix := ""
+		childAncestorPrefix := ancestorPrefix
+		if depth > 0 {
+			connector := "├── "
+			branch := "│   "
+			if isLast {
+				connector = "└── "
+				branch = "    "
+			}
+			prefix = ancestorPrefix + connector
+			childAncestorPrefix = ancestorPrefix + branch
+		}
+
+		nodes = append(nodes, accountTreeNode{account: a, depth: depth, prefix: prefix})
+		children := childrenByParent[a.ID]
+		for i, child := range children {
+			walk(child, depth+1, childAncestorPrefix, i == len(children)-1)
 		}
 	}
-	for _, r := range roots {
-		walk(r, 0)
+	for i, r := range roots {
+		walk(r, 0, "", i == len(roots)-1)
 	}
 
 	// An account whose ancestors form a cycle is unreachable from any
@@ -1207,8 +1238,8 @@ func orderAccountsAsTree(accounts []client.Account) []accountTreeNode {
 		}
 	}
 	sortAccountsByPosition(leftover)
-	for _, a := range leftover {
-		walk(a, 0)
+	for i, a := range leftover {
+		walk(a, 0, "", i == len(leftover)-1)
 	}
 
 	return nodes

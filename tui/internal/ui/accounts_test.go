@@ -102,12 +102,13 @@ func TestAccountsToRows(t *testing.T) {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
 	// Assets (the root) comes first, followed immediately by its child
-	// Cash, indented. The balance column replaces the parent column, and
-	// shows each balance formatted per its own currency. No ID column.
+	// Cash, drawn with a tree connector as its only (so last) child. The
+	// balance column replaces the parent column, and shows each balance
+	// formatted per its own currency. No ID column.
 	if got, want := rows[0], (table.Row{"", "Assets", "USD10.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"1000", "  Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1000", "└── Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
 }
@@ -136,23 +137,27 @@ func TestOrderAccountsAsTree(t *testing.T) {
 	nodes := orderAccountsAsTree([]client.Account{bank, pettyCash, liabilities, cash, assets})
 
 	type want struct {
-		name  string
-		depth int
+		name   string
+		depth  int
+		prefix string
 	}
 	wants := []want{
-		{"Assets", 0},
-		{"Cash", 1},
-		{"Petty Cash", 2},
-		{"Bank", 1},
-		{"Liabilities", 0},
+		// A root gets no connector; its children draw one, and Cash
+		// (not the last of Assets' two children) makes Petty Cash's own
+		// connector hang off a continuing "│" rather than blank space.
+		{"Assets", 0, ""},
+		{"Cash", 1, "├── "},
+		{"Petty Cash", 2, "│   └── "},
+		{"Bank", 1, "└── "},
+		{"Liabilities", 0, ""},
 	}
 	if len(nodes) != len(wants) {
 		t.Fatalf("got %d nodes, want %d: %+v", len(nodes), len(wants), nodes)
 	}
 	for i, w := range wants {
-		if nodes[i].account.Name != w.name || nodes[i].depth != w.depth {
-			t.Errorf("node %d = (%q, depth %d), want (%q, depth %d)",
-				i, nodes[i].account.Name, nodes[i].depth, w.name, w.depth)
+		if nodes[i].account.Name != w.name || nodes[i].depth != w.depth || nodes[i].prefix != w.prefix {
+			t.Errorf("node %d = (%q, depth %d, prefix %q), want (%q, depth %d, prefix %q)",
+				i, nodes[i].account.Name, nodes[i].depth, nodes[i].prefix, w.name, w.depth, w.prefix)
 		}
 	}
 }
