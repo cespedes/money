@@ -163,6 +163,38 @@ func fieldPickerOffset(columnIndex int) int {
 	return columnIndex * (createFieldWidth + columnGap)
 }
 
+// ledgerPickerHeight is how many lines a stripPickerHeader'd dropdown
+// view actually renders: the ledger entry form's three pickers (Currency
+// x2, Other account) all share table.WithHeight(8), but that argument
+// counts the table's own header row too (see table.Model.SetHeight), and
+// stripPickerHeader already strips that row off — leaving 8-1 data rows.
+const ledgerPickerHeight = 7
+
+// ledgerPickerSlotWidth is wide enough to hold any of those three
+// pickers wherever they may appear — the widest is row 1's Currency
+// field, at fieldPickerOffset(3) — so a blank filler reserving this
+// footprint (see pickerSlot) never has to shrink to make room for one.
+// (fieldPickerOffset(3) inlined: a const initializer can't call a func.)
+const ledgerPickerSlotWidth = 3*(createFieldWidth+columnGap) + parentPickerWidth
+
+// pickerSlot reserves a constant ledgerPickerHeight x ledgerPickerSlotWidth
+// footprint for a dropdown that may or may not be showing right now —
+// view when shown, a same-sized block of blank lines otherwise — so the
+// ledger entry pop-up's total size, and thus its centered position, stays
+// constant as focus moves between fields instead of visibly resizing
+// whenever a dropdown appears or disappears.
+func pickerSlot(shown bool, view string) string {
+	if shown {
+		return view
+	}
+	line := strings.Repeat(" ", ledgerPickerSlotWidth)
+	lines := make([]string, ledgerPickerHeight)
+	for i := range lines {
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
 func newAccountsModel(c *client.Client) accountsModel {
 	columns := []table.Column{
 		{Title: "Code", Width: 10},
@@ -1181,17 +1213,6 @@ func (m accountsModel) createPopup() string {
 	return popupStyle.Render(content)
 }
 
-// ledgerEntryFormView renders the ledger's "new entry" form (see
-// startLedgerEntry): this account's own timestamp/description/amount/
-// currency, then the other side's account and optional amount. Currency
-// and Other account are pickers — while one has focus, its dropdown is
-// shown (header stripped, so it sits flush below); otherwise the
-// currently chosen option shows as plain text instead, the same
-// focused-vs-not treatment as the account form's own Parent field (see
-// createPopup), so the selection stays visible while editing other
-// fields. Unlike createPopup, this isn't a pop-up composited over
-// something else — like the Transactions tab's own creation wizard, it
-// replaces the ledger table in place (see View()).
 // ledgerEntryPopup renders the ledger's "new entry" form (see
 // startLedgerEntry) as a bordered, table-shaped pop-up, the same
 // visual style as createPopup: a first row for this account —
@@ -1203,7 +1224,14 @@ func (m accountsModel) createPopup() string {
 // text instead, the same focused-vs-not treatment as the account form's
 // own Parent field, so the selection stays visible while editing other
 // fields. It's meant to be composited over the ledger table via
-// overlayCentered, not shown in place of it.
+// overlayCentered, not shown in place of it. Unlike createPopup's single
+// Parent dropdown, this form has three, each of which would otherwise
+// grow or shrink the pop-up's own size (and so its centered position)
+// as focus moves onto or off of it — jarring, since the whole pop-up
+// visibly jumps around while filling in the form — so each dropdown's
+// row (see pickerSlot) always reserves the same footprint whether or
+// not it's currently showing, keeping the pop-up's size constant across
+// every field.
 func (m accountsModel) ledgerEntryPopup() string {
 	row1Labels := []string{"Timestamp", "Description", "Amount", "Currency"}
 	row1Focus := []ledgerEntryFocus{focusEntryTimestamp, focusEntryDescription, focusEntryAmount, focusEntryCurrency}
@@ -1252,16 +1280,18 @@ func (m accountsModel) ledgerEntryPopup() string {
 	content := formLabelStyle.Render("New entry in "+m.ledgerAccount.Name) + "\n\n" +
 		strings.Join(headers1, "  ") + "\n" +
 		strings.Join(row1Values, "  ")
-	if m.ledgerEntryFocus == focusEntryCurrency {
-		content += "\n" + indentLines(stripPickerHeader(m.ledgerCurrencyPicker.View()), fieldPickerOffset(3))
-	}
+	content += "\n" + pickerSlot(m.ledgerEntryFocus == focusEntryCurrency,
+		indentLines(stripPickerHeader(m.ledgerCurrencyPicker.View()), fieldPickerOffset(3)))
 	content += "\n\n" + strings.Join(headers2, "  ") + "\n" + strings.Join(row2Values, "  ")
-	if m.ledgerEntryFocus == focusEntryOtherAccount {
-		content += "\n" + stripPickerHeader(m.ledgerAccountPicker.View())
+	row2PickerShown := m.ledgerEntryFocus == focusEntryOtherAccount || m.ledgerEntryFocus == focusEntryOtherCurrency
+	var row2Picker string
+	switch m.ledgerEntryFocus {
+	case focusEntryOtherAccount:
+		row2Picker = stripPickerHeader(m.ledgerAccountPicker.View())
+	case focusEntryOtherCurrency:
+		row2Picker = indentLines(stripPickerHeader(m.ledgerOtherCurrencyPicker.View()), fieldPickerOffset(2))
 	}
-	if m.ledgerEntryFocus == focusEntryOtherCurrency {
-		content += "\n" + indentLines(stripPickerHeader(m.ledgerOtherCurrencyPicker.View()), fieldPickerOffset(2))
-	}
+	content += "\n" + pickerSlot(row2PickerShown, row2Picker)
 	if m.err != "" {
 		content += "\n\n" + errorStyle.Render("Error: "+m.err)
 	}

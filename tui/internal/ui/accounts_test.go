@@ -1134,6 +1134,35 @@ func TestAccountsModel_LedgerEntryCurrencyPickerAlignsUnderColumn(t *testing.T) 
 	}
 }
 
+// TestAccountsModel_LedgerEntryPopupSizeIsConstant is a regression test:
+// each dropdown reserves the same footprint whether or not it's actually
+// showing (see pickerSlot), so the pop-up's overall size — and thus its
+// centered position — must stay the same no matter which field has
+// focus, rather than growing when a dropdown appears and shrinking when
+// it doesn't.
+func TestAccountsModel_LedgerEntryPopupSizeIsConstant(t *testing.T) {
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	m := newTestLedgerModel(t, nil, nil, testUSD, eur)
+	m, _ = m.Update(keyPress("n"))
+
+	baseline := m.ledgerEntryPopup()
+	wantWidth, wantHeight := lipgloss.Width(baseline), lipgloss.Height(baseline)
+
+	for m.ledgerEntryFocus != focusEntryTimestamp {
+		m, _ = m.Update(keyPress("tab"))
+	}
+	for range 7 { // one full lap through every field, including all three pickers
+		popup := m.ledgerEntryPopup()
+		if w := lipgloss.Width(popup); w != wantWidth {
+			t.Errorf("focus %v: popup width = %d, want %d (constant)", m.ledgerEntryFocus, w, wantWidth)
+		}
+		if h := lipgloss.Height(popup); h != wantHeight {
+			t.Errorf("focus %v: popup height = %d, want %d (constant)", m.ledgerEntryFocus, h, wantHeight)
+		}
+		m, _ = m.Update(keyPress("tab"))
+	}
+}
+
 func TestAccountsModel_LedgerEntryDefaultsToLastUsedCurrency(t *testing.T) {
 	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 	entries := []client.LedgerEntry{
