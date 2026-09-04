@@ -110,6 +110,10 @@ type accountsModel struct {
 	// the parent dropdown can be resized again when the account list
 	// changes (see syncParentPickerHeight).
 	windowHeight int
+	// windowWidth is the last content width passed to SetSize, kept so
+	// the ledger table's columns can be resized again when its entries
+	// or currencies change (see syncLedgerTable).
+	windowWidth int
 
 	// selectAfterReload, when set, is an account ID whose row the cursor
 	// should jump back to the next time accountsLoadedMsg arrives — used
@@ -132,14 +136,7 @@ const (
 	fieldEntryOtherAmount
 )
 
-// moneyColumnWidth is the width of every single-amount "Value"/"Balance"
-// table column (wide enough for a currency name plus a formatted
-// amount); cell content for those columns is right-aligned to this same
-// width (see rightAlign), since bubbles' table has no per-column
-// alignment option.
-const moneyColumnWidth = 18
-
-// balancesColumnWidth is wider still, for the accounts list's "Balances"
+// balancesColumnWidth is for the accounts list's "Balances"
 // column, which can hold more than one currency's amount at once.
 const balancesColumnWidth = 40
 
@@ -230,12 +227,10 @@ func newAccountsModel(c *client.Client) accountsModel {
 	code.SetWidth(createFieldWidth)
 
 	ledgerTable := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "Timestamp", Width: 17},
-			{Title: "Description", Width: 30},
-			{Title: "Value", Width: moneyColumnWidth},
-			{Title: "Balance", Width: moneyColumnWidth},
-		}),
+		// A placeholder layout, replaced by syncLedgerTable's own
+		// content- and width-aware columns as soon as the initial
+		// WindowSizeMsg arrives (before anything is ever drawn).
+		table.WithColumns(ledgerColumns(0, len("Value"), len("Balance"))),
 		table.WithFocused(true),
 		table.WithHeight(10),
 	)
@@ -317,7 +312,77 @@ func (m *accountsModel) SetSize(width, height int) {
 		m.ledgerTable.SetHeight(height - 2)
 	}
 	m.windowHeight = height
+	m.windowWidth = width
 	m.syncParentPickerHeight()
+	m.syncLedgerTable()
+}
+
+// ledgerAmountColumnWidths returns how wide the ledger table's "Value"
+// and "Balance" columns need to be to show every currently-loaded
+// entry's amount and running balance without truncation, floored at
+// each column's own header width. Most currencies' formatted amounts
+// are much shorter than a generous fixed width would reserve, so
+// sizing to the actual content — rather than a one-size-fits-all
+// constant — leaves the rest of the table's width for Description.
+func ledgerAmountColumnWidths(entries []client.LedgerEntry, currencies currencyByID) (valueWidth, balanceWidth int) {
+	valueWidth, balanceWidth = len("Value"), len("Balance")
+	for _, e := range entries {
+		if w := len(formatAmount(e.Amount, currencies, e.CurrencyID)); w > valueWidth {
+			valueWidth = w
+		}
+		if w := len(formatAmount(e.Balance, currencies, e.CurrencyID)); w > balanceWidth {
+			balanceWidth = w
+		}
+	}
+	return valueWidth, balanceWidth
+}
+
+// ledgerTimestampWidth and ledgerMinDescriptionWidth bound the ledger
+// table's Timestamp and Description columns respectively (see
+// ledgerColumns) — Timestamp is fixed, matching timestampLayout's own
+// rendered length, and Description never shrinks below a floor even on
+// a narrow terminal, the same way it was fixed at 30 before this table
+// became width-aware.
+const (
+	ledgerTimestampWidth      = 17
+	ledgerMinDescriptionWidth = 20
+	// ledgerCellPadding is each column's own left+right Cell padding
+	// (Padding(0, 1), see bubbles' table.DefaultStyles) not reflected in
+	// a Column's own Width — 4 columns' worth must be subtracted from
+	// the table's total width to know how much Description can actually
+	// grow to without pushing the table wider than the terminal.
+	ledgerCellPadding = 2
+)
+
+// ledgerColumns computes the ledger table's column layout for the given
+// terminal width and already-measured Value/Balance widths (see
+// ledgerAmountColumnWidths): Description gets whatever width is left
+// over once Timestamp/Value/Balance and their cell padding are
+// accounted for — so a wide terminal gives Description far more room,
+// instead of leaving it empty to the right of mostly-blank, generously
+// fixed-width Value/Balance columns.
+func ledgerColumns(width, valueWidth, balanceWidth int) []table.Column {
+	descriptionWidth := width - 4*ledgerCellPadding - ledgerTimestampWidth - valueWidth - balanceWidth
+	if descriptionWidth < ledgerMinDescriptionWidth {
+		descriptionWidth = ledgerMinDescriptionWidth
+	}
+	return []table.Column{
+		{Title: "Timestamp", Width: ledgerTimestampWidth},
+		{Title: "Description", Width: descriptionWidth},
+		{Title: "Value", Width: valueWidth},
+		{Title: "Balance", Width: balanceWidth},
+	}
+}
+
+// syncLedgerTable recomputes the ledger table's columns and rows
+// together from the model's current entries/currencies/window width —
+// called whenever any of those change, since Value/Balance's widths
+// (and so Description's) depend on the entries actually being shown
+// (see ledgerAmountColumnWidths/ledgerColumns).
+func (m *accountsModel) syncLedgerTable() {
+	valueWidth, balanceWidth := ledgerAmountColumnWidths(m.ledgerEntries, m.currencies)
+	m.ledgerTable.SetColumns(ledgerColumns(m.windowWidth, valueWidth, balanceWidth))
+	m.ledgerTable.SetRows(ledgerToRows(m.ledgerEntries, m.currencies, valueWidth, balanceWidth))
 }
 
 // syncParentPickerHeight sizes the parent dropdown to show every option at
@@ -424,7 +489,7 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 			m.table.SetRows(nodesToRows(orderAccountsAsTree(m.rows), m.currencies))
 		}
 		if m.ledgerEntries != nil {
-			m.ledgerTable.SetRows(ledgerToRows(m.ledgerEntries, m.currencies))
+			m.syncLedgerTable()
 		}
 		return m, nil
 
@@ -445,7 +510,7 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		}
 		m.err = ""
 		m.ledgerEntries = msg.entries
-		m.ledgerTable.SetRows(ledgerToRows(msg.entries, m.currencies))
+		m.syncLedgerTable()
 		return m, nil
 
 	case ledgerEntryMutatedMsg:
@@ -1165,14 +1230,14 @@ func rightAlign(s string, width int) string {
 	return fmt.Sprintf("%*s", width, s)
 }
 
-func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID) []table.Row {
+func ledgerToRows(entries []client.LedgerEntry, currencies currencyByID, valueWidth, balanceWidth int) []table.Row {
 	rows := make([]table.Row, 0, len(entries))
 	for _, e := range entries {
 		rows = append(rows, table.Row{
 			e.Timestamp.Local().Format(timestampLayout),
 			e.Description,
-			rightAlign(formatAmount(e.Amount, currencies, e.CurrencyID), moneyColumnWidth),
-			rightAlign(formatAmount(e.Balance, currencies, e.CurrencyID), moneyColumnWidth),
+			rightAlign(formatAmount(e.Amount, currencies, e.CurrencyID), valueWidth),
+			rightAlign(formatAmount(e.Balance, currencies, e.CurrencyID), balanceWidth),
 		})
 	}
 	return rows

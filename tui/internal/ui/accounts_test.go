@@ -842,24 +842,104 @@ func TestAccountsModel_MoveNoRowsIsNoop(t *testing.T) {
 
 func TestLedgerToRows(t *testing.T) {
 	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
-	rows := ledgerToRows([]client.LedgerEntry{
+	entries := []client.LedgerEntry{
 		{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: "10", Balance: "10", Timestamp: ts},
 		{Description: "Invoice #2", CurrencyID: testUSD.ID, Amount: "-3", Balance: "7", Timestamp: ts},
-	}, testCurrencies)
+	}
+	// The widest Value ("USD10.00"/"USD-3.00") and Balance ("USD10.00")
+	// are both 8 characters, so both columns come out that wide.
+	valueWidth, balanceWidth := ledgerAmountColumnWidths(entries, testCurrencies)
+	if valueWidth != 8 || balanceWidth != 8 {
+		t.Fatalf("ledgerAmountColumnWidths = (%d, %d), want (8, 8)", valueWidth, balanceWidth)
+	}
+
+	rows := ledgerToRows(entries, testCurrencies, valueWidth, balanceWidth)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
 	if got, want := rows[0], (table.Row{
 		ts.Local().Format(timestampLayout), "Invoice #1",
-		rightAlign("USD10.00", moneyColumnWidth), rightAlign("USD10.00", moneyColumnWidth),
+		rightAlign("USD10.00", valueWidth), rightAlign("USD10.00", balanceWidth),
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
 	if got, want := rows[1], (table.Row{
 		ts.Local().Format(timestampLayout), "Invoice #2",
-		rightAlign("USD-3.00", moneyColumnWidth), rightAlign("USD7.00", moneyColumnWidth),
+		rightAlign("USD-3.00", valueWidth), rightAlign("USD7.00", balanceWidth),
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
+	}
+}
+
+// TestLedgerColumns is a regression test: Value/Balance must be sized to
+// their actual content rather than a generous fixed width, and
+// Description must get whatever width that leaves over — growing with
+// the terminal — rather than staying fixed regardless of how much room
+// is available.
+func TestLedgerColumns(t *testing.T) {
+	widthOf := func(cols []table.Column, title string) int {
+		for _, c := range cols {
+			if c.Title == title {
+				return c.Width
+			}
+		}
+		t.Fatalf("no %q column in %+v", title, cols)
+		return -1
+	}
+
+	// Short amounts: Value/Balance shouldn't reserve more than they need.
+	narrow := ledgerColumns(100, 8, 8)
+	if got := widthOf(narrow, "Value"); got != 8 {
+		t.Errorf("Value width = %d, want 8 (the measured amount width)", got)
+	}
+	if got := widthOf(narrow, "Balance"); got != 8 {
+		t.Errorf("Balance width = %d, want 8 (the measured amount width)", got)
+	}
+
+	// Description absorbs whatever's left of a wider terminal, rather
+	// than staying fixed.
+	wide := ledgerColumns(200, 8, 8)
+	if widthOf(wide, "Description") <= widthOf(narrow, "Description") {
+		t.Errorf("Description width at 200 cols (%d) should exceed that at 100 cols (%d)",
+			widthOf(wide, "Description"), widthOf(narrow, "Description"))
+	}
+
+	// On a too-narrow terminal, Description still can't shrink below its
+	// floor.
+	tooNarrow := ledgerColumns(10, 8, 8)
+	if got := widthOf(tooNarrow, "Description"); got != ledgerMinDescriptionWidth {
+		t.Errorf("Description width on a too-narrow terminal = %d, want the %d floor", got, ledgerMinDescriptionWidth)
+	}
+}
+
+// TestAccountsModel_SyncLedgerTableSizesToContent checks the full path
+// from SetSize/ledger entries through to the live ledgerTable: a large
+// outlier amount widens Value/Balance to fit it (rather than truncating
+// it), and Description still gets whatever's left of the terminal.
+func TestAccountsModel_SyncLedgerTableSizesToContent(t *testing.T) {
+	m := newTestLedgerModel(t, nil, []client.LedgerEntry{
+		{Description: "Small", CurrencyID: testUSD.ID, Amount: "10", Balance: "10"},
+		{Description: "Huge", CurrencyID: testUSD.ID, Amount: "-1000000000", Balance: "-999999990"},
+	})
+	m.SetSize(150, 20)
+	m.syncLedgerTable()
+
+	wantValueWidth := len(formatAmount("-1000000000", m.currencies, testUSD.ID))
+	cols := m.ledgerTable.Columns()
+	var gotValueWidth, gotDescriptionWidth int
+	for _, c := range cols {
+		switch c.Title {
+		case "Value":
+			gotValueWidth = c.Width
+		case "Description":
+			gotDescriptionWidth = c.Width
+		}
+	}
+	if gotValueWidth != wantValueWidth {
+		t.Errorf("Value width = %d, want %d (wide enough for the huge amount)", gotValueWidth, wantValueWidth)
+	}
+	if gotDescriptionWidth <= ledgerMinDescriptionWidth {
+		t.Errorf("Description width = %d, want more than the %d floor on a 150-column terminal", gotDescriptionWidth, ledgerMinDescriptionWidth)
 	}
 }
 
