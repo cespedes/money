@@ -97,6 +97,10 @@ To stop everything:
 make down
 ```
 
+For a production deployment without Docker at all (e.g. a disk-constrained
+server) — native PostgreSQL, a static Go binary, and a systemd service —
+see `DEPLOY.md`.
+
 ### Running the API on the host instead
 
 If you'd rather iterate on the API without rebuilding a container each
