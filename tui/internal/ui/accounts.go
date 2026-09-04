@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -199,7 +198,7 @@ func newAccountsModel(c *client.Client) accountsModel {
 	entryDesc.Prompt = ""
 	entryDesc.SetWidth(createFieldWidth)
 	entryAmount := textinput.New()
-	entryAmount.Placeholder = "e.g. -1000"
+	entryAmount.Placeholder = "e.g. -10.50 or 10.50"
 	entryAmount.Prompt = ""
 	entryAmount.SetWidth(createFieldWidth)
 	entryOtherAmount := textinput.New()
@@ -647,16 +646,16 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 		m.setLedgerEntryFocus(focusEntryTimestamp)
 		return m, nil
 	}
-	amount, err := strconv.ParseInt(strings.TrimSpace(m.ledgerEntryInputs[fieldEntryAmount].Value()), 10, 64)
-	if err != nil {
-		m.err = "amount must be an integer"
-		m.setLedgerEntryFocus(focusEntryAmount)
-		return m, nil
-	}
 	currency, ok := currencyAt(m.ledgerCurrencyPicker.Cursor(), m.currencyList)
 	if !ok {
 		m.err = "pick a currency"
 		m.setLedgerEntryFocus(focusEntryCurrency)
+		return m, nil
+	}
+	amount, err := currency.ParseAmount(m.ledgerEntryInputs[fieldEntryAmount].Value())
+	if err != nil {
+		m.err = err.Error()
+		m.setLedgerEntryFocus(focusEntryAmount)
 		return m, nil
 	}
 	otherAccountID, ok := selectedAccountID(m.ledgerAccountPicker.Cursor(), m.ledgerOtherAccountOptions)
@@ -674,9 +673,9 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 
 	var otherAmount int64
 	if raw := strings.TrimSpace(m.ledgerEntryInputs[fieldEntryOtherAmount].Value()); raw != "" {
-		parsed, err := strconv.ParseInt(raw, 10, 64)
+		parsed, err := otherCurrency.ParseAmount(raw)
 		if err != nil {
-			m.err = "amount must be an integer"
+			m.err = err.Error()
 			m.setLedgerEntryFocus(focusEntryOtherAmount)
 			return m, nil
 		}
@@ -693,8 +692,8 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 		Description: desc,
 		Timestamp:   ts,
 		Entries: []client.Entry{
-			{AccountID: m.ledgerAccount.ID, Amount: amount, CurrencyID: currency.ID},
-			{AccountID: otherAccountID, Amount: otherAmount, CurrencyID: otherCurrency.ID},
+			{AccountID: m.ledgerAccount.ID, Amount: currency.FromMinorUnits(amount), CurrencyID: currency.ID},
+			{AccountID: otherAccountID, Amount: otherCurrency.FromMinorUnits(otherAmount), CurrencyID: otherCurrency.ID},
 		},
 	}
 

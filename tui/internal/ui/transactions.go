@@ -37,6 +37,18 @@ const (
 
 const timestampLayout = "2006-01-02 15:04"
 
+// pendingEntry is a not-yet-submitted transaction entry, tracked
+// internally as an exact integer of the currency's minor units (see
+// Currency.ParseAmount) — so the running per-currency balance shown
+// while building the transaction, and the final zero-sum check, are both
+// exact — converted to the API's decimal wire format (see
+// Currency.FromMinorUnits) only once, in submitCreate.
+type pendingEntry struct {
+	AccountID  int64
+	Amount     int64
+	CurrencyID int64
+}
+
 type transactionsModel struct {
 	client *client.Client
 
@@ -57,7 +69,7 @@ type transactionsModel struct {
 	timestampInput    textinput.Model
 	acctInput         textinput.Model
 	valueInput        textinput.Model
-	pendingEntries    []client.Entry
+	pendingEntries    []pendingEntry
 	pendingAcctID     int64
 	pendingCurrencyID int64
 
@@ -88,7 +100,7 @@ func newTransactionsModel(c *client.Client) transactionsModel {
 	acct.Placeholder = "Account ID"
 	acct.SetWidth(20)
 	val := textinput.New()
-	val.Placeholder = "Amount in the currency's minor unit (e.g. -1000 or 1000)"
+	val.Placeholder = "e.g. -10.50 or 10.50"
 	val.SetWidth(30)
 
 	currencyPicker := table.New(
@@ -324,7 +336,9 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 				m.err = "pick a currency"
 				return m, nil
 			}
-			m.pendingCurrencyID = m.currencies[row].ID
+			currency := m.currencies[row]
+			m.pendingCurrencyID = currency.ID
+			m.valueInput.Placeholder = fmt.Sprintf("e.g. -10%s50 or 10%s50", currency.DecimalSeparator, currency.DecimalSeparator)
 			m.err = ""
 			m.step = stepEntryValue
 			m.valueInput.Focus()
@@ -336,12 +350,12 @@ func (m transactionsModel) updateCreate(msg tea.KeyMsg) (transactionsModel, tea.
 
 	case stepEntryValue:
 		if msg.String() == "enter" {
-			amount, err := strconv.ParseInt(strings.TrimSpace(m.valueInput.Value()), 10, 64)
+			amount, err := m.currencyIndex[m.pendingCurrencyID].ParseAmount(m.valueInput.Value())
 			if err != nil {
-				m.err = "amount must be an integer"
+				m.err = err.Error()
 				return m, nil
 			}
-			m.pendingEntries = append(m.pendingEntries, client.Entry{
+			m.pendingEntries = append(m.pendingEntries, pendingEntry{
 				AccountID: m.pendingAcctID, Amount: amount, CurrencyID: m.pendingCurrencyID,
 			})
 			m.err = ""
@@ -386,7 +400,7 @@ func (m transactionsModel) submitCreate() (transactionsModel, tea.Cmd) {
 	for _, currencyID := range sortedCurrencyIDs(sums) {
 		if sum := sums[currencyID]; sum != 0 {
 			m.err = fmt.Sprintf("entries in %s must sum to zero (currently %s)",
-				currencyName(currencyID, m.currencyIndex), formatAmount(sum, m.currencyIndex, currencyID))
+				currencyName(currencyID, m.currencyIndex), formatMinorAmount(sum, m.currencyIndex, currencyID))
 			m.step = stepEntryAccount
 			m.acctInput.Focus()
 			return m, nil
@@ -405,10 +419,18 @@ func (m transactionsModel) submitCreate() (transactionsModel, tea.Cmd) {
 		ts = parsed
 	}
 
+	entries := make([]client.Entry, len(m.pendingEntries))
+	for i, e := range m.pendingEntries {
+		entries[i] = client.Entry{
+			AccountID:  e.AccountID,
+			Amount:     m.currencyIndex[e.CurrencyID].FromMinorUnits(e.Amount),
+			CurrencyID: e.CurrencyID,
+		}
+	}
 	transaction := client.Transaction{
 		Description: strings.TrimSpace(m.descInput.Value()),
 		Timestamp:   ts,
-		Entries:     m.pendingEntries,
+		Entries:     entries,
 	}
 
 	m.err = ""
@@ -483,11 +505,11 @@ func (m transactionsModel) View() string {
 			sums := make(map[int64]int64)
 			for _, e := range m.pendingEntries {
 				sums[e.CurrencyID] += e.Amount
-				b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatAmount(e.Amount, m.currencyIndex, e.CurrencyID)))
+				b.WriteString(fmt.Sprintf("  account %d: %s\n", e.AccountID, formatMinorAmount(e.Amount, m.currencyIndex, e.CurrencyID)))
 			}
 			for _, currencyID := range sortedCurrencyIDs(sums) {
 				b.WriteString(dimStyle.Render(fmt.Sprintf("  sum (%s): %s\n",
-					currencyName(currencyID, m.currencyIndex), formatAmount(sums[currencyID], m.currencyIndex, currencyID))))
+					currencyName(currencyID, m.currencyIndex), formatMinorAmount(sums[currencyID], m.currencyIndex, currencyID))))
 			}
 		}
 		if m.step == stepEntryAccount || m.step == stepEntryCurrency || m.step == stepEntryValue {

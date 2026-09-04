@@ -129,7 +129,7 @@ func TestGetAccountLedger(t *testing.T) {
 			t.Errorf("got %s %s, want GET /accounts/7/transactions", r.Method, r.URL.Path)
 		}
 		json.NewEncoder(w).Encode([]client.LedgerEntry{
-			{TransactionID: 1, Description: "Invoice #1", Amount: 1000, CurrencyID: 5, Balance: 1000},
+			{TransactionID: 1, Description: "Invoice #1", Amount: "10", CurrencyID: 5, Balance: "10"},
 		})
 	})
 
@@ -137,7 +137,7 @@ func TestGetAccountLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccountLedger: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Balance != 1000 {
+	if len(entries) != 1 || entries[0].Balance != "10" {
 		t.Fatalf("GetAccountLedger = %+v", entries)
 	}
 }
@@ -190,8 +190,8 @@ func TestCreateTransaction(t *testing.T) {
 	created, err := c.CreateTransaction(context.Background(), client.Transaction{
 		Description: "Invoice #1",
 		Entries: []client.Entry{
-			{AccountID: 1, Amount: 1000, CurrencyID: 5},
-			{AccountID: 2, Amount: -1000, CurrencyID: 5},
+			{AccountID: 1, Amount: "10", CurrencyID: 5},
+			{AccountID: 2, Amount: "-10", CurrencyID: 5},
 		},
 	})
 	if err != nil {

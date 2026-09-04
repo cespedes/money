@@ -42,12 +42,19 @@ A small double-entry accounting application, made of three parts:
   ledger quantity. See below for how a rate is looked up for an instant
   that wasn't directly recorded.
 
-Monetary amounts are stored and transmitted as integers in the minor unit
-of their currency (e.g. cents, per that currency's `decimal_places`)
-rather than floating point numbers, to avoid rounding errors. An amount of
-`1050` in a currency with 2 decimal places means `10.50` of it. This
-doesn't apply to currency prices (see above), which are inherently
-approximate market data rather than ledger quantities.
+Monetary amounts (transaction/ledger entry `amount`, ledger `balance`,
+account `balances`) are stored internally as integers in the minor unit of
+their currency (e.g. cents, per that currency's `decimal_places`), never
+floating point, to avoid rounding errors — but on the API's JSON wire
+format they're represented as a decimal JSON number in the currency's own
+major unit, e.g. `10.5` (not `1050`) in a currency with 2 decimal places.
+The API converts between the two exactly, via string-digit arithmetic
+rather than floating point, so this involves no rounding; a number with
+more decimal digits than the currency's `decimal_places` is rejected.
+Trailing zero decimal digits are trimmed on the way out (`10.50` is sent
+back as `10`, and a whole number like `10.00` as `10`, with no decimal
+point at all). This doesn't apply to currency prices (see above), which
+are inherently approximate market data rather than ledger quantities.
 
 The zero-sum invariant is enforced twice: the API rejects unbalanced
 transactions before writing anything, and the database itself has a
@@ -173,8 +180,8 @@ curl -s localhost:30730/transactions -d '{
   "timestamp": "2026-08-31T10:00:00Z",
   "description": "Invoice #1",
   "entries": [
-    {"account_id": 1, "amount": 1000, "currency_id": 1},
-    {"account_id": 2, "amount": -1000, "currency_id": 1}
+    {"account_id": 1, "amount": 10, "currency_id": 1},
+    {"account_id": 2, "amount": -10, "currency_id": 1}
   ]
 }'
 ```
@@ -186,7 +193,7 @@ currency's own entries sum to zero.
 transaction with an entry on it, in timestamp order, with that account's
 own amount (and currency) in the transaction and its running balance *in
 that same currency* through that point — e.g.
-`[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "currency_id": 1, "amount": 1000, "balance": 1000}]`.
+`[{"transaction_id": 1, "timestamp": "...", "description": "Invoice #1", "currency_id": 1, "amount": 10, "balance": 10}]`.
 A transaction posting to the account in more than one currency contributes
 one row per currency.
 
@@ -287,8 +294,11 @@ individual formatting fields.
 When creating a transaction, the TUI walks through description, timestamp,
 and then repeatedly asks for an account, a currency (picked from a
 dropdown, the same way an account's parent is), and an amount — until you
-confirm you're done. A transaction can mix currencies freely; it will
-only submit once each currency's own entries sum to zero.
+confirm you're done. Amount is typed as a real number using that
+currency's own thousands/decimal separators (e.g. `1.234,56` for a
+currency formatted like EUR), not the API's own decimal syntax or the
+underlying integer minor units. A transaction can mix currencies freely;
+it will only submit once each currency's own entries sum to zero.
 
 Pressing `n` inside an account's ledger is a quicker path to the common
 case: a transaction between that account and exactly one other. Unlike

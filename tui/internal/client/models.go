@@ -2,6 +2,8 @@
 package client
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -23,10 +25,13 @@ type Account struct {
 	Balances []CurrencyAmount `json:"balances"`
 }
 
-// CurrencyAmount is an amount posted in a specific currency.
+// CurrencyAmount is an amount posted in a specific currency. Amount is a
+// decimal JSON number in that currency's own units (e.g. 10.5), as the
+// API represents it on the wire — not an integer count of minor units;
+// see Currency.ToMinorUnits/FromMinorUnits.
 type CurrencyAmount struct {
-	CurrencyID int64 `json:"currency_id"`
-	Amount     int64 `json:"amount"`
+	CurrencyID int64       `json:"currency_id"`
+	Amount     json.Number `json:"amount"`
 }
 
 // Currency (or, more generally, commodity) is a unit that transaction
@@ -81,6 +86,169 @@ func (c Currency) Format(amount int64) string {
 	return number + space + c.Name
 }
 
+// ParseAmount parses s — a real-world quantity of this currency typed by
+// a person, e.g. "1,234.56" or, for a currency using different
+// separators, "1.234,56" (see ThousandsSeparator/DecimalSeparator) —
+// into an integer number of its minor units (e.g. 123456 for 2
+// DecimalPlaces), the inverse of Format's number formatting. This is for
+// interpreting what a person types (in the currency's own display
+// convention); to interpret an amount already received from the API on
+// the wire, see ToMinorUnits instead — the wire format always uses plain
+// '.' decimal syntax, regardless of a currency's own DecimalSeparator.
+func (c Currency) ParseAmount(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("amount is required")
+	}
+
+	neg := false
+	switch {
+	case strings.HasPrefix(s, "-"):
+		neg = true
+		s = s[1:]
+	case strings.HasPrefix(s, "+"):
+		s = s[1:]
+	}
+	if c.ThousandsSeparator != "" {
+		s = strings.ReplaceAll(s, c.ThousandsSeparator, "")
+	}
+
+	whole, frac := s, ""
+	if c.DecimalSeparator != "" {
+		if i := strings.Index(s, c.DecimalSeparator); i >= 0 {
+			whole, frac = s[:i], s[i+len(c.DecimalSeparator):]
+		}
+	}
+	if whole == "" {
+		whole = "0"
+	}
+	if !isDigits(whole) || !isDigits(frac) {
+		return 0, fmt.Errorf("%q is not a valid amount", s)
+	}
+	if len(frac) > c.DecimalPlaces {
+		return 0, fmt.Errorf("too many decimal digits for %s (max %d)", c.Name, c.DecimalPlaces)
+	}
+	frac += strings.Repeat("0", c.DecimalPlaces-len(frac))
+
+	wholeVal, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a valid amount", s)
+	}
+	scale := int64(1)
+	for range c.DecimalPlaces {
+		scale *= 10
+	}
+	var fracVal int64
+	if frac != "" {
+		fracVal, err = strconv.ParseInt(frac, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not a valid amount", s)
+		}
+	}
+
+	amount := wholeVal*scale + fracVal
+	if neg {
+		amount = -amount
+	}
+	return amount, nil
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ToMinorUnits converts n — a decimal amount as the API represents it on
+// the wire (plain '.' decimal syntax, e.g. "10.5"; see CurrencyAmount,
+// Entry, LedgerEntry) — into an integer number of this currency's minor
+// units (e.g. 1050 for 2 DecimalPlaces), working on n's exact decimal
+// digits rather than through floating point. This is the wire format's
+// own fixed syntax, not the currency's display convention — see
+// ParseAmount for interpreting what a person types instead.
+func (c Currency) ToMinorUnits(n json.Number) (int64, error) {
+	s := string(n)
+	if s == "" {
+		return 0, fmt.Errorf("amount is required")
+	}
+	neg := false
+	switch {
+	case strings.HasPrefix(s, "-"):
+		neg = true
+		s = s[1:]
+	case strings.HasPrefix(s, "+"):
+		s = s[1:]
+	}
+
+	whole, frac := s, ""
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		whole, frac = s[:i], s[i+1:]
+	}
+	if whole == "" {
+		whole = "0"
+	}
+	if !isDigits(whole) || !isDigits(frac) {
+		return 0, fmt.Errorf("%q is not a valid amount", string(n))
+	}
+	if len(frac) > c.DecimalPlaces {
+		frac = frac[:c.DecimalPlaces] // the API should never send more digits than DecimalPlaces; truncate defensively rather than fail
+	}
+	frac += strings.Repeat("0", c.DecimalPlaces-len(frac))
+
+	wholeVal, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a valid amount", string(n))
+	}
+	scale := int64(1)
+	for range c.DecimalPlaces {
+		scale *= 10
+	}
+	var fracVal int64
+	if frac != "" {
+		fracVal, err = strconv.ParseInt(frac, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not a valid amount", string(n))
+		}
+	}
+
+	amount := wholeVal*scale + fracVal
+	if neg {
+		amount = -amount
+	}
+	return amount, nil
+}
+
+// FromMinorUnits is ToMinorUnits' inverse: minor (an integer number of
+// this currency's minor units) as a json.Number in the API's wire format
+// (plain '.' decimal syntax), with trailing zero decimal digits trimmed
+// (and the decimal point dropped for a whole number) — for constructing
+// a CurrencyAmount/Entry/LedgerEntry to send to the API.
+func (c Currency) FromMinorUnits(minor int64) json.Number {
+	sign := ""
+	if minor < 0 {
+		sign = "-"
+		minor = -minor
+	}
+	scale := int64(1)
+	for range c.DecimalPlaces {
+		scale *= 10
+	}
+	whole := strconv.FormatInt(minor/scale, 10)
+	if c.DecimalPlaces == 0 {
+		return json.Number(sign + whole)
+	}
+	frac := strconv.FormatInt(minor%scale, 10)
+	frac = strings.Repeat("0", c.DecimalPlaces-len(frac)) + frac
+	frac = strings.TrimRight(frac, "0")
+	if frac == "" {
+		return json.Number(sign + whole)
+	}
+	return json.Number(sign + whole + "." + frac)
+}
+
 // groupThousands inserts sep every three digits from the right of a
 // (non-negative, digits-only) number string, e.g. "1234567" -> "1,234,567".
 func groupThousands(digits, sep string) string {
@@ -104,11 +272,13 @@ func groupThousands(digits, sep string) string {
 }
 
 // Entry is one leg of a transaction: a signed amount, in a specific
-// currency, posted to an account.
+// currency, posted to an account. Amount is a decimal JSON number in
+// that currency's own units (see CurrencyAmount), not an integer count
+// of minor units.
 type Entry struct {
-	AccountID  int64 `json:"account_id"`
-	Amount     int64 `json:"amount"`
-	CurrencyID int64 `json:"currency_id"`
+	AccountID  int64       `json:"account_id"`
+	Amount     json.Number `json:"amount"`
+	CurrencyID int64       `json:"currency_id"`
 }
 
 // Transaction mirrors the API's transaction representation. Entries must
@@ -123,12 +293,14 @@ type Transaction struct {
 // LedgerEntry is one transaction's effect on a specific account, in a
 // specific currency: Amount is that account's own amount in the
 // transaction, and Balance is the account's running balance in that same
-// currency through that point.
+// currency through that point. Both are decimal JSON numbers in that
+// currency's own units (see CurrencyAmount), not integer counts of minor
+// units.
 type LedgerEntry struct {
-	TransactionID int64     `json:"transaction_id"`
-	Timestamp     time.Time `json:"timestamp"`
-	Description   string    `json:"description"`
-	CurrencyID    int64     `json:"currency_id"`
-	Amount        int64     `json:"amount"`
-	Balance       int64     `json:"balance"`
+	TransactionID int64       `json:"transaction_id"`
+	Timestamp     time.Time   `json:"timestamp"`
+	Description   string      `json:"description"`
+	CurrencyID    int64       `json:"currency_id"`
+	Amount        json.Number `json:"amount"`
+	Balance       json.Number `json:"balance"`
 }

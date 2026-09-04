@@ -103,12 +103,12 @@ func TestDeleteCurrency_ReferencedByEntry(t *testing.T) {
 	cash, revenue := createTwoAccountsHTTP(t, h)
 	usd := createTestCurrency(t, h, "USD")
 
-	rec := do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
 		Description: "Invoice #1",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
 		},
 	}, nil)
 	if rec.Code != http.StatusCreated {

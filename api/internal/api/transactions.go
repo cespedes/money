@@ -16,7 +16,12 @@ func (h *Handler) listTransactions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, transactions)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toTransactionsJSON(transactions, decimalPlaces))
 }
 
 func (h *Handler) getTransaction(w http.ResponseWriter, r *http.Request) {
@@ -34,28 +39,48 @@ func (h *Handler) getTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, transaction)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toTransactionJSON(transaction, decimalPlaces))
 }
 
 func (h *Handler) createTransaction(w http.ResponseWriter, r *http.Request) {
-	var t models.Transaction
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+	var body transactionJSON
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(t.Description) == "" {
+	if strings.TrimSpace(body.Description) == "" {
 		writeError(w, http.StatusBadRequest, "description is required")
 		return
 	}
-	if len(t.Entries) < 2 {
+	if len(body.Entries) < 2 {
 		writeError(w, http.StatusBadRequest, "a transaction needs at least two entries")
 		return
 	}
-	if t.Timestamp.IsZero() {
+	if body.Timestamp.IsZero() {
 		writeError(w, http.StatusBadRequest, "timestamp is required")
 		return
 	}
-	t.ID = 0
+
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	entries := make([]models.Entry, len(body.Entries))
+	for i, e := range body.Entries {
+		entry, err := fromEntryJSON(e, decimalPlaces)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		entries[i] = entry
+	}
+	t := models.Transaction{Description: body.Description, Timestamp: body.Timestamp, Entries: entries}
 
 	created, err := h.store.Transactions.Create(r.Context(), t)
 	if errors.Is(err, store.ErrUnbalanced) {
@@ -70,7 +95,7 @@ func (h *Handler) createTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, toTransactionJSON(created, decimalPlaces))
 }
 
 func (h *Handler) deleteTransaction(w http.ResponseWriter, r *http.Request) {

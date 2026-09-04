@@ -215,15 +215,6 @@ func TestUpdateAccount_RejectsCycle(t *testing.T) {
 	}
 }
 
-func balanceFor(balances []models.CurrencyAmount, currencyID int64) (int64, bool) {
-	for _, b := range balances {
-		if b.CurrencyID == currencyID {
-			return b.Amount, true
-		}
-	}
-	return 0, false
-}
-
 func TestAccountBalance(t *testing.T) {
 	h := newTestHandler(t)
 	usd := createTestCurrency(t, h, "USD")
@@ -235,27 +226,27 @@ func TestAccountBalance(t *testing.T) {
 		t.Fatalf("balances of a brand new account = %+v, want none", cash.Balances)
 	}
 
-	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
 		Description: "Invoice #1",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
 		},
 	}, nil)
 
-	var got models.Account
+	var got accountDTO
 	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &got)
-	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 1000 {
-		t.Fatalf("balance via GET /accounts/{id} = (%d, %v), want 1000", bal, ok)
+	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 10 {
+		t.Fatalf("balance via GET /accounts/{id} = (%v, %v), want 10", bal, ok)
 	}
 
-	var list []models.Account
+	var list []accountDTO
 	do(t, h, http.MethodGet, "/accounts", nil, &list)
 	for _, a := range list {
 		if a.ID == cash.ID {
-			if bal, ok := balanceFor(a.Balances, usd.ID); !ok || bal != 1000 {
-				t.Fatalf("balance via GET /accounts = (%d, %v), want 1000", bal, ok)
+			if bal, ok := balanceFor(a.Balances, usd.ID); !ok || bal != 10 {
+				t.Fatalf("balance via GET /accounts = (%v, %v), want 10", bal, ok)
 			}
 		}
 	}
@@ -274,24 +265,24 @@ func TestAccountLedger(t *testing.T) {
 		t.Fatalf("ledger of a missing account: status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 
-	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
 		Description: "Invoice #1",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
 		},
 	}, nil)
-	do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC),
 		Description: "Invoice #2",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 500, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -500, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 5, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -5, CurrencyID: usd.ID},
 		},
 	}, nil)
 
-	var ledger []models.LedgerEntry
+	var ledger []ledgerEntryDTO
 	rec = do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d/transactions", cash.ID), nil, &ledger)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -299,10 +290,10 @@ func TestAccountLedger(t *testing.T) {
 	if len(ledger) != 2 {
 		t.Fatalf("got %d entries, want 2: %+v", len(ledger), ledger)
 	}
-	if ledger[0].Description != "Invoice #1" || ledger[0].Amount != 1000 || ledger[0].Balance != 1000 || ledger[0].CurrencyID != usd.ID {
+	if ledger[0].Description != "Invoice #1" || ledger[0].Amount != 10 || ledger[0].Balance != 10 || ledger[0].CurrencyID != usd.ID {
 		t.Errorf("entry 0 = %+v", ledger[0])
 	}
-	if ledger[1].Description != "Invoice #2" || ledger[1].Amount != 500 || ledger[1].Balance != 1500 || ledger[1].CurrencyID != usd.ID {
+	if ledger[1].Description != "Invoice #2" || ledger[1].Amount != 5 || ledger[1].Balance != 15 || ledger[1].CurrencyID != usd.ID {
 		t.Errorf("entry 1 = %+v", ledger[1])
 	}
 }

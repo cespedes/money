@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -363,10 +364,25 @@ func indexCurrencies(currencies []client.Currency) currencyByID {
 	return m
 }
 
-// formatAmount renders amount in the given currency, or a fallback if
-// that currency isn't in the local cache yet (e.g. it was created by
-// another client and this tab hasn't refreshed).
-func formatAmount(amount int64, currencies currencyByID, currencyID int64) string {
+// formatAmount renders wireAmount — a decimal amount as received from
+// the API (see client.CurrencyAmount/Entry/LedgerEntry) — in the given
+// currency, or a fallback if that currency isn't in the local cache yet
+// (e.g. it was created by another client and this tab hasn't refreshed)
+// or wireAmount can't be parsed against it.
+func formatAmount(wireAmount json.Number, currencies currencyByID, currencyID int64) string {
+	if c, ok := currencies[currencyID]; ok {
+		if minor, err := c.ToMinorUnits(wireAmount); err == nil {
+			return c.Format(minor)
+		}
+	}
+	return string(wireAmount) + " (?)"
+}
+
+// formatMinorAmount is formatAmount's counterpart for an amount that's
+// already an exact integer of the currency's minor units — e.g. one
+// computed locally (see transactionsModel's pendingEntry), rather than a
+// decimal json.Number received from the API.
+func formatMinorAmount(amount int64, currencies currencyByID, currencyID int64) string {
 	if c, ok := currencies[currencyID]; ok {
 		return c.Format(amount)
 	}

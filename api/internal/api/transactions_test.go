@@ -21,16 +21,16 @@ func TestTransactionsCRUD(t *testing.T) {
 	cash, revenue := createTwoAccountsHTTP(t, h)
 	usd := createTestCurrency(t, h, "USD")
 
-	txn := models.Transaction{
+	txn := transactionDTO{
 		Timestamp:   time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC),
 		Description: "Invoice #1",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
 		},
 	}
 
-	var created models.Transaction
+	var created transactionDTO
 	rec := do(t, h, http.MethodPost, "/transactions", txn, &created)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, want %d", rec.Code, http.StatusCreated)
@@ -38,17 +38,20 @@ func TestTransactionsCRUD(t *testing.T) {
 	if created.ID == 0 || len(created.Entries) != 2 {
 		t.Fatalf("create: got %+v", created)
 	}
-	if created.Entries[0].CurrencyID != usd.ID {
-		t.Fatalf("create: entry currency = %d, want %d", created.Entries[0].CurrencyID, usd.ID)
+	if created.Entries[0].CurrencyID != usd.ID || created.Entries[0].Amount != 10 {
+		t.Fatalf("create: entry 0 = %+v, want amount 10, currency %d", created.Entries[0], usd.ID)
+	}
+	if created.Entries[1].Amount != -10 {
+		t.Fatalf("create: entry 1 = %+v, want amount -10", created.Entries[1])
 	}
 
-	var got models.Transaction
+	var got transactionDTO
 	rec = do(t, h, http.MethodGet, fmt.Sprintf("/transactions/%d", created.ID), nil, &got)
 	if rec.Code != http.StatusOK || len(got.Entries) != 2 {
 		t.Fatalf("get: status=%d got=%+v", rec.Code, got)
 	}
 
-	var list []models.Transaction
+	var list []transactionDTO
 	rec = do(t, h, http.MethodGet, "/transactions", nil, &list)
 	if rec.Code != http.StatusOK || len(list) != 1 {
 		t.Fatalf("list: status=%d got=%+v", rec.Code, list)
@@ -65,6 +68,38 @@ func TestTransactionsCRUD(t *testing.T) {
 	}
 }
 
+// TestCreateTransaction_DecimalAmounts confirms an entry's amount is a
+// real decimal number in the currency's own units, not an integer count
+// of minor units — e.g. 10.5 for a currency with 2 decimal places means
+// 1050 minor units internally, and comes back the same way.
+func TestCreateTransaction_DecimalAmounts(t *testing.T) {
+	h := newTestHandler(t)
+	cash, revenue := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD") // 2 decimal places
+
+	var created transactionDTO
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   time.Now(),
+		Description: "Fractional",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10.5, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10.5, CurrencyID: usd.ID},
+		},
+	}, &created)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if created.Entries[0].Amount != 10.5 || created.Entries[1].Amount != -10.5 {
+		t.Fatalf("entries = %+v, want 10.5 and -10.5", created.Entries)
+	}
+
+	var got accountDTO
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &got)
+	if bal, ok := balanceFor(got.Balances, usd.ID); !ok || bal != 10.5 {
+		t.Fatalf("balance = (%v, %v), want 10.5", bal, ok)
+	}
+}
+
 func TestCreateTransaction_Validation(t *testing.T) {
 	h := newTestHandler(t)
 	cash, revenue := createTwoAccountsHTTP(t, h)
@@ -73,28 +108,28 @@ func TestCreateTransaction_Validation(t *testing.T) {
 
 	tests := []struct {
 		name string
-		txn  models.Transaction
+		txn  transactionDTO
 	}{
 		{
 			name: "missing description",
-			txn: models.Transaction{Timestamp: ts, Entries: []models.Entry{
+			txn: transactionDTO{Timestamp: ts, Entries: []entryDTO{
 				{AccountID: cash.ID, Amount: 1, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1, CurrencyID: usd.ID},
 			}},
 		},
 		{
 			name: "missing timestamp",
-			txn: models.Transaction{Description: "x", Entries: []models.Entry{
+			txn: transactionDTO{Description: "x", Entries: []entryDTO{
 				{AccountID: cash.ID, Amount: 1, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -1, CurrencyID: usd.ID},
 			}},
 		},
 		{
 			name: "fewer than two entries",
-			txn:  models.Transaction{Timestamp: ts, Description: "x", Entries: []models.Entry{{AccountID: cash.ID, Amount: 0, CurrencyID: usd.ID}}},
+			txn:  transactionDTO{Timestamp: ts, Description: "x", Entries: []entryDTO{{AccountID: cash.ID, Amount: 0, CurrencyID: usd.ID}}},
 		},
 		{
 			name: "entries do not sum to zero",
-			txn: models.Transaction{Timestamp: ts, Description: "x", Entries: []models.Entry{
-				{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -900, CurrencyID: usd.ID},
+			txn: transactionDTO{Timestamp: ts, Description: "x", Entries: []entryDTO{
+				{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID}, {AccountID: revenue.ID, Amount: -9, CurrencyID: usd.ID},
 			}},
 		},
 	}
@@ -114,12 +149,12 @@ func TestCreateTransaction_UnknownAccount(t *testing.T) {
 	usd := createTestCurrency(t, h, "USD")
 
 	var body map[string]string
-	rec := do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
 		Description: "Bad reference",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: 999999, Amount: -1000, CurrencyID: usd.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: 999999, Amount: -10, CurrencyID: usd.ID},
 		},
 	}, &body)
 	if rec.Code != http.StatusBadRequest {
@@ -134,14 +169,33 @@ func TestCreateTransaction_UnknownCurrency(t *testing.T) {
 	h := newTestHandler(t)
 	cash, revenue := createTwoAccountsHTTP(t, h)
 
-	rec := do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
 		Description: "Bad currency",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: 999999},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: 999999},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: 999999},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: 999999},
 		},
 	}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateTransaction_AmountTooManyDecimalDigits(t *testing.T) {
+	h := newTestHandler(t)
+	cash, revenue := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD") // 2 decimal places
+
+	var body map[string]string
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   time.Now(),
+		Description: "Too precise",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10.555, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10.555, CurrencyID: usd.ID},
+		},
+	}, &body)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -157,14 +211,14 @@ func TestCreateTransaction_MixedCurrencies(t *testing.T) {
 	usd := createTestCurrency(t, h, "USD")
 	eur := createTestCurrency(t, h, "EUR")
 
-	rec := do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
 		Description: "Balanced in both currencies",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
-			{AccountID: cash.ID, Amount: 500, CurrencyID: eur.ID},
-			{AccountID: revenue.ID, Amount: -500, CurrencyID: eur.ID},
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 5, CurrencyID: eur.ID},
+			{AccountID: revenue.ID, Amount: -5, CurrencyID: eur.ID},
 		},
 	}, nil)
 	if rec.Code != http.StatusCreated {
@@ -172,14 +226,14 @@ func TestCreateTransaction_MixedCurrencies(t *testing.T) {
 	}
 
 	var body map[string]string
-	rec = do(t, h, http.MethodPost, "/transactions", models.Transaction{
+	rec = do(t, h, http.MethodPost, "/transactions", transactionDTO{
 		Timestamp:   time.Now(),
-		Description: "USD short by 100",
-		Entries: []models.Entry{
-			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
-			{AccountID: revenue.ID, Amount: -900, CurrencyID: usd.ID},
-			{AccountID: cash.ID, Amount: 500, CurrencyID: eur.ID},
-			{AccountID: revenue.ID, Amount: -500, CurrencyID: eur.ID},
+		Description: "USD short by 1",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -9, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 5, CurrencyID: eur.ID},
+			{AccountID: revenue.ID, Amount: -5, CurrencyID: eur.ID},
 		},
 	}, &body)
 	if rec.Code != http.StatusBadRequest {

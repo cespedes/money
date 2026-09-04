@@ -21,7 +21,12 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, accounts)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAccountsJSON(accounts, decimalPlaces))
 }
 
 func (h *Handler) getAccount(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +44,12 @@ func (h *Handler) getAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, account)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAccountJSON(account, decimalPlaces))
 }
 
 func (h *Handler) listAccountLedger(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +67,12 @@ func (h *Handler) listAccountLedger(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, entries)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toLedgerEntriesJSON(entries, decimalPlaces))
 }
 
 func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +96,12 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAccountJSON(created, decimalPlaces))
 }
 
 func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +138,12 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	decimalPlaces, err := h.currencyDecimalPlaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAccountJSON(updated, decimalPlaces))
 }
 
 type moveAccountRequest struct {

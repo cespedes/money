@@ -94,8 +94,8 @@ func TestAccountsToRows(t *testing.T) {
 	code := "1000"
 	parent := int64(2)
 	rows := accountsToRows([]client.Account{
-		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: -500}}},
-		{ID: 2, Name: "Assets", Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: 1000}}},
+		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "-5"}}},
+		{ID: 2, Name: "Assets", Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "10"}}},
 	}, testCurrencies)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
@@ -117,7 +117,7 @@ func TestFormatBalances(t *testing.T) {
 	}
 	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 	currencies := currencyByID{testUSD.ID: testUSD, eur.ID: eur}
-	got := formatBalances([]client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: 1000}, {CurrencyID: eur.ID, Amount: 500}}, currencies)
+	got := formatBalances([]client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "10"}, {CurrencyID: eur.ID, Amount: "5"}}, currencies)
 	if want := "USD10.00, 5,00 EUR"; got != want {
 		t.Errorf("formatBalances = %q, want %q", got, want)
 	}
@@ -842,8 +842,8 @@ func TestAccountsModel_MoveNoRowsIsNoop(t *testing.T) {
 func TestLedgerToRows(t *testing.T) {
 	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	rows := ledgerToRows([]client.LedgerEntry{
-		{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000, Timestamp: ts},
-		{Description: "Invoice #2", CurrencyID: testUSD.ID, Amount: -300, Balance: 700, Timestamp: ts},
+		{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: "10", Balance: "10", Timestamp: ts},
+		{Description: "Invoice #2", CurrencyID: testUSD.ID, Amount: "-3", Balance: "7", Timestamp: ts},
 	}, testCurrencies)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
@@ -876,7 +876,7 @@ func TestAccountsModel_EnterOpensLedger(t *testing.T) {
 	m := newTestAccountsModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		json.NewEncoder(w).Encode([]client.LedgerEntry{
-			{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000},
+			{Description: "Invoice #1", CurrencyID: testUSD.ID, Amount: "10", Balance: "10"},
 		})
 	})
 	m.rows = []client.Account{{ID: 5, Name: "Cash"}}
@@ -1062,8 +1062,8 @@ func TestAccountsModel_LedgerEntryPopup(t *testing.T) {
 func TestAccountsModel_LedgerEntryDefaultsToLastUsedCurrency(t *testing.T) {
 	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 	entries := []client.LedgerEntry{
-		{CurrencyID: testUSD.ID, Amount: 1000, Balance: 1000},
-		{CurrencyID: eur.ID, Amount: 500, Balance: 500}, // most recent: EUR
+		{CurrencyID: testUSD.ID, Amount: "10", Balance: "10"},
+		{CurrencyID: eur.ID, Amount: "5", Balance: "5"}, // most recent: EUR
 	}
 	m := newTestLedgerModel(t, nil, entries, testUSD, eur)
 
@@ -1158,8 +1158,8 @@ func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
 		m := setupToField(t, focusEntryDescription)
 		m = typeString(m, "Refund")
 		m, _ = m.Update(keyPress("enter"))
-		if m.err != "amount must be an integer" {
-			t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+		if m.err != "amount is required" {
+			t.Fatalf("err = %q, want %q", m.err, "amount is required")
 		}
 		if m.ledgerEntryFocus != focusEntryAmount {
 			t.Fatalf("ledgerEntryFocus = %v, want focusEntryAmount", m.ledgerEntryFocus)
@@ -1173,8 +1173,9 @@ func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
 		m = typeString(m, "500")
 		m.ledgerEntryInputs[fieldEntryOtherAmount].SetValue("not a number")
 		m, _ = m.Update(keyPress("enter"))
-		if m.err != "amount must be an integer" {
-			t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+		want := `"not a number" is not a valid amount`
+		if m.err != want {
+			t.Fatalf("err = %q, want %q", m.err, want)
 		}
 		if m.ledgerEntryFocus != focusEntryOtherAmount {
 			t.Fatalf("ledgerEntryFocus = %v, want focusEntryOtherAmount", m.ledgerEntryFocus)
@@ -1222,7 +1223,7 @@ func TestAccountsModel_LedgerEntrySubmitBalancesWhenOtherAmountBlank(t *testing.
 	m, _ = m.Update(keyPress("tab")) // -> Description
 	m = typeString(m, "Refund")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
-	m = typeString(m, "500")
+	m = typeString(m, "5")
 	// Leave Currency (defaults to USD) and Other account (defaults to
 	// Revenue, the only other account) untouched, and Other amount blank.
 
@@ -1245,8 +1246,8 @@ func TestAccountsModel_LedgerEntrySubmitBalancesWhenOtherAmountBlank(t *testing.
 		t.Fatalf("got %d entries, want 2", len(gotTransaction.Entries))
 	}
 	want := []client.Entry{
-		{AccountID: 5, Amount: 500, CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: -500, CurrencyID: testUSD.ID},
+		{AccountID: 5, Amount: "5", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "-5", CurrencyID: testUSD.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v", gotTransaction.Entries, want)
@@ -1273,11 +1274,11 @@ func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
 	m, _ = m.Update(keyPress("tab")) // -> Description
 	m = typeString(m, "Split")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
-	m = typeString(m, "500")
+	m = typeString(m, "5")
 	m, _ = m.Update(keyPress("tab")) // -> Currency
 	m, _ = m.Update(keyPress("tab")) // -> Other account
 	m, _ = m.Update(keyPress("tab")) // -> Other amount
-	m = typeString(m, "-300")
+	m = typeString(m, "-3")
 
 	_, cmd := m.Update(keyPress("enter"))
 	if cmd == nil {
@@ -1286,8 +1287,8 @@ func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
 	cmd()
 
 	want := []client.Entry{
-		{AccountID: 5, Amount: 500, CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: -300, CurrencyID: testUSD.ID},
+		{AccountID: 5, Amount: "5", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "-3", CurrencyID: testUSD.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (an explicit other amount, not auto-balanced)", gotTransaction.Entries, want)
@@ -1307,11 +1308,11 @@ func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
 	m, _ = m.Update(keyPress("tab")) // -> Description
 	m = typeString(m, "Exchange")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
-	m = typeString(m, "-1000")
+	m = typeString(m, "-10")
 	m, _ = m.Update(keyPress("tab")) // -> Currency (stays USD)
 	m, _ = m.Update(keyPress("tab")) // -> Other account
 	m, _ = m.Update(keyPress("tab")) // -> Other amount
-	m = typeString(m, "900")
+	m = typeString(m, "9")
 	m, _ = m.Update(keyPress("tab")) // -> Other currency
 	m, _ = m.Update(keyPress("down"))
 
@@ -1322,8 +1323,8 @@ func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
 	cmd()
 
 	want := []client.Entry{
-		{AccountID: 5, Amount: -1000, CurrencyID: testUSD.ID},
-		{AccountID: 6, Amount: 900, CurrencyID: eur.ID},
+		{AccountID: 5, Amount: "-10", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "9", CurrencyID: eur.ID},
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (each entry keeping its own row's currency)", gotTransaction.Entries, want)

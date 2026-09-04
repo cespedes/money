@@ -143,8 +143,9 @@ func TestTransactionsModel_CreateValidation_BadValue(t *testing.T) {
 	m = typeStringT(m, "abc")
 	m, _ = m.Update(keyPress("enter"))
 
-	if m.err != "amount must be an integer" {
-		t.Fatalf("err = %q, want %q", m.err, "amount must be an integer")
+	want := `"abc" is not a valid amount`
+	if m.err != want {
+		t.Fatalf("err = %q, want %q", m.err, want)
 	}
 	if m.step != stepEntryValue {
 		t.Fatalf("step = %v, want stepEntryValue", m.step)
@@ -185,11 +186,11 @@ func TestTransactionsModel_CreateValidation_BadTimestamp(t *testing.T) {
 	// Two balanced entries, so submitCreate gets past the entry checks and
 	// actually reaches timestamp parsing.
 	m = enterAccountAndCurrency(m, "1")
-	m = typeStringT(m, "1000")
+	m = typeStringT(m, "10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("y"))     // add another entry -> stepEntryAccount
 	m = enterAccountAndCurrency(m, "2")
-	m = typeStringT(m, "-1000")
+	m = typeStringT(m, "-10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("n"))     // submit
 
@@ -217,7 +218,7 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 	m, _ = m.Update(keyPress("enter")) // blank -> now, -> stepEntryAccount
 
 	m = enterAccountAndCurrency(m, "1")
-	m = typeStringT(m, "1000")
+	m = typeStringT(m, "10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 
 	if m.step != stepConfirmMore {
@@ -229,7 +230,7 @@ func TestTransactionsModel_CreateFullFlow(t *testing.T) {
 
 	m, _ = m.Update(keyPress("y")) // add another entry -> stepEntryAccount
 	m = enterAccountAndCurrency(m, "2")
-	m = typeStringT(m, "-1000")
+	m = typeStringT(m, "-10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 
 	m, cmd := m.Update(keyPress("n")) // n at stepConfirmMore submits
@@ -276,11 +277,11 @@ func TestTransactionsModel_CreateRejectsUnbalancedPerCurrency(t *testing.T) {
 
 	// USD leg: balanced (1000, -1000).
 	m = enterAccountAndCurrency(m, "1") // picks cursor 0 = testUSD
-	m = typeStringT(m, "1000")
+	m = typeStringT(m, "10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("y"))
 	m = enterAccountAndCurrency(m, "2") // cursor 0 = testUSD again
-	m = typeStringT(m, "-1000")
+	m = typeStringT(m, "-10")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 	m, _ = m.Update(keyPress("y"))
 
@@ -289,7 +290,7 @@ func TestTransactionsModel_CreateRejectsUnbalancedPerCurrency(t *testing.T) {
 	m, _ = m.Update(keyPress("enter")) // -> stepEntryCurrency
 	m, _ = m.Update(keyPress("down"))  // move to EUR (cursor 1)
 	m, _ = m.Update(keyPress("enter")) // confirm EUR -> stepEntryValue
-	m = typeStringT(m, "500")
+	m = typeStringT(m, "5")
 	m, _ = m.Update(keyPress("enter")) // -> stepConfirmMore
 
 	m, _ = m.Update(keyPress("n")) // submit: USD balances, EUR doesn't
@@ -329,8 +330,8 @@ func TestTransactionsModel_DetailViewShowsFormattedAmounts(t *testing.T) {
 		ID:          1,
 		Description: "Invoice #1",
 		Entries: []client.Entry{
-			{AccountID: 1, Amount: 1000, CurrencyID: testUSD.ID},
-			{AccountID: 2, Amount: -1000, CurrencyID: testUSD.ID},
+			{AccountID: 1, Amount: "10", CurrencyID: testUSD.ID},
+			{AccountID: 2, Amount: "-10", CurrencyID: testUSD.ID},
 		},
 	}
 	m.mode = transactionsModeDetail

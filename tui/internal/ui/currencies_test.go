@@ -450,10 +450,10 @@ func TestIndexCurrencies(t *testing.T) {
 }
 
 func TestFormatAmount(t *testing.T) {
-	if got := formatAmount(1000, testCurrencies, testUSD.ID); got != "USD10.00" {
+	if got := formatAmount("10", testCurrencies, testUSD.ID); got != "USD10.00" {
 		t.Errorf("formatAmount with known currency = %q, want %q", got, "USD10.00")
 	}
-	if got := formatAmount(1000, testCurrencies, 999); got != "1000 (?)" {
+	if got := formatAmount("1000", testCurrencies, 999); got != "1000 (?)" {
 		t.Errorf("formatAmount with unknown currency = %q, want the raw-amount fallback", got)
 	}
 }
