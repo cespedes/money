@@ -20,7 +20,9 @@ A small double-entry accounting application, made of three parts:
   update. The API also reports each account's `balances`: one
   `(currency_id, amount)` pair per currency it has entries in — its own
   entries only, not including any child accounts' — with no entry at all for
-  a currency it's never been posted in.
+  a currency it's never been posted in. It also reports
+  `last_transaction_at`, the timestamp of the most recent transaction with
+  an entry on it (again its own only) — omitted if it has none.
 - **Currencies** (or, more generally, commodities) are the units entries are
   posted in. Each has a `name`, formatting configuration (`symbol_before`
   — whether the name goes before the amount, defaulting to `false` —,

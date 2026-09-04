@@ -94,8 +94,9 @@ var testCurrencies = currencyByID{testUSD.ID: testUSD}
 func TestAccountsToRows(t *testing.T) {
 	code := "1000"
 	parent := int64(2)
+	lastTx := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
 	rows := accountsToRows([]client.Account{
-		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "-5"}}},
+		{ID: 1, Name: "Cash", Code: &code, ParentID: &parent, Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "-5"}}, LastTransactionAt: &lastTx},
 		{ID: 2, Name: "Assets", Balances: []client.CurrencyAmount{{CurrencyID: testUSD.ID, Amount: "10"}}},
 	}, testCurrencies)
 	if len(rows) != 2 {
@@ -104,11 +105,13 @@ func TestAccountsToRows(t *testing.T) {
 	// Assets (the root) comes first, followed immediately by its child
 	// Cash, drawn with a tree connector as its only (so last) child. The
 	// balance column replaces the parent column, and shows each balance
-	// formatted per its own currency. No ID column.
-	if got, want := rows[0], (table.Row{"", "Assets", "USD10.00"}); !reflect.DeepEqual(got, want) {
+	// formatted per its own currency. No ID column. Assets has never had
+	// a transaction, so its Last transaction cell is blank; Cash's shows
+	// its LastTransactionAt converted to local time.
+	if got, want := rows[0], (table.Row{"", "Assets", "USD10.00", ""}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 0 = %v, want %v", got, want)
 	}
-	if got, want := rows[1], (table.Row{"1000", "└── Cash", "USD-5.00"}); !reflect.DeepEqual(got, want) {
+	if got, want := rows[1], (table.Row{"1000", "└── Cash", "USD-5.00", lastTx.Local().Format(timestampLayout)}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row 1 = %v, want %v", got, want)
 	}
 }

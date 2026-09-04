@@ -214,22 +214,24 @@ func toCurrencyAmountsJSON(balances []models.CurrencyAmount, decimalPlaces map[i
 // accountJSON is the wire representation of models.Account, with
 // currencyAmountJSON balances instead of models.CurrencyAmount.
 type accountJSON struct {
-	ID       int64                `json:"id"`
-	Name     string               `json:"name"`
-	Code     *string              `json:"code,omitempty"`
-	ParentID *int64               `json:"parent_id,omitempty"`
-	Position int64                `json:"position"`
-	Balances []currencyAmountJSON `json:"balances"`
+	ID                int64                `json:"id"`
+	Name              string               `json:"name"`
+	Code              *string              `json:"code,omitempty"`
+	ParentID          *int64               `json:"parent_id,omitempty"`
+	Position          int64                `json:"position"`
+	Balances          []currencyAmountJSON `json:"balances"`
+	LastTransactionAt *time.Time           `json:"last_transaction_at,omitempty"`
 }
 
 func toAccountJSON(a models.Account, decimalPlaces map[int64]int) accountJSON {
 	return accountJSON{
-		ID:       a.ID,
-		Name:     a.Name,
-		Code:     a.Code,
-		ParentID: a.ParentID,
-		Position: a.Position,
-		Balances: toCurrencyAmountsJSON(a.Balances, decimalPlaces),
+		ID:                a.ID,
+		Name:              a.Name,
+		Code:              a.Code,
+		ParentID:          a.ParentID,
+		Position:          a.Position,
+		Balances:          toCurrencyAmountsJSON(a.Balances, decimalPlaces),
+		LastTransactionAt: a.LastTransactionAt,
 	}
 }
 

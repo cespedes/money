@@ -23,6 +23,10 @@ type Account struct {
 	// orderAccountsAsTree); only ever changed via Client.MoveAccount.
 	Position int64            `json:"position"`
 	Balances []CurrencyAmount `json:"balances"`
+	// LastTransactionAt is the timestamp of the most recent transaction
+	// with an entry on this account (not any child accounts'), or nil if
+	// it has none.
+	LastTransactionAt *time.Time `json:"last_transaction_at,omitempty"`
 }
 
 // CurrencyAmount is an amount posted in a specific currency. Amount is a

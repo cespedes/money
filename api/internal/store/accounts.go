@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,6 +42,9 @@ func (s *AccountStore) List(ctx context.Context) ([]models.Account, error) {
 	if err := s.attachBalances(ctx, accounts); err != nil {
 		return nil, err
 	}
+	if err := s.attachLastTransactionAt(ctx, accounts); err != nil {
+		return nil, err
+	}
 	return accounts, nil
 }
 
@@ -58,6 +62,9 @@ func (s *AccountStore) Get(ctx context.Context, id int64) (models.Account, error
 
 	accounts := []models.Account{a}
 	if err := s.attachBalances(ctx, accounts); err != nil {
+		return models.Account{}, err
+	}
+	if err := s.attachLastTransactionAt(ctx, accounts); err != nil {
 		return models.Account{}, err
 	}
 	return accounts[0], nil
@@ -102,6 +109,51 @@ func (s *AccountStore) attachBalances(ctx context.Context, accounts []models.Acc
 
 	for i := range accounts {
 		accounts[i].Balances = balances[accounts[i].ID]
+	}
+	return nil
+}
+
+// attachLastTransactionAt fills in each account's LastTransactionAt: the
+// timestamp of the most recent transaction with an entry on it (not any
+// child accounts', matching attachBalances). An account with no entries
+// at all keeps a nil LastTransactionAt.
+func (s *AccountStore) attachLastTransactionAt(ctx context.Context, accounts []models.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(accounts))
+	for i, a := range accounts {
+		ids[i] = a.ID
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT te.account_id, MAX(t."timestamp")
+		 FROM transaction_entries te
+		 JOIN transactions t ON t.id = te.transaction_id
+		 WHERE te.account_id = ANY($1)
+		 GROUP BY te.account_id`, ids)
+	if err != nil {
+		return fmt.Errorf("query last transaction times: %w", err)
+	}
+	defer rows.Close()
+
+	lastAt := make(map[int64]time.Time, len(accounts))
+	for rows.Next() {
+		var accountID int64
+		var t time.Time
+		if err := rows.Scan(&accountID, &t); err != nil {
+			return fmt.Errorf("scan last transaction time: %w", err)
+		}
+		lastAt[accountID] = t
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate last transaction times: %w", err)
+	}
+
+	for i := range accounts {
+		if t, ok := lastAt[accounts[i].ID]; ok {
+			accounts[i].LastTransactionAt = &t
+		}
 	}
 	return nil
 }

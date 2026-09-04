@@ -210,6 +210,7 @@ func newAccountsModel(c *client.Client) accountsModel {
 		{Title: "Code", Width: 10},
 		{Title: "Name", Width: 30},
 		{Title: "Balances", Width: balancesColumnWidth},
+		{Title: "Last transaction", Width: ledgerTimestampWidth},
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -1136,7 +1137,7 @@ func nodesToRows(nodes []accountTreeNode, currencies currencyByID) []table.Row {
 			code = *a.Code
 		}
 		name := node.prefix + a.Name
-		rows = append(rows, table.Row{code, name, formatBalances(a.Balances, currencies)})
+		rows = append(rows, table.Row{code, name, formatBalances(a.Balances, currencies), formatLastTransactionAt(a.LastTransactionAt)})
 	}
 	return rows
 }
@@ -1153,6 +1154,17 @@ func formatBalances(balances []client.CurrencyAmount, currencies currencyByID) s
 		parts[i] = formatAmount(b.Amount, currencies, b.CurrencyID)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// formatLastTransactionAt renders an account's LastTransactionAt (see
+// client.Account) for the accounts list's "Last transaction" column,
+// converting to local time the same way the ledger table's own
+// Timestamp column does — or "" for an account with no transactions.
+func formatLastTransactionAt(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Local().Format(timestampLayout)
 }
 
 type accountTreeNode struct {

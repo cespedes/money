@@ -252,6 +252,61 @@ func TestAccountBalance(t *testing.T) {
 	}
 }
 
+func TestAccountLastTransactionAt(t *testing.T) {
+	h := newTestHandler(t)
+	usd := createTestCurrency(t, h, "USD")
+
+	var cash, revenue models.Account
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Cash"}, &cash)
+	do(t, h, http.MethodPost, "/accounts", models.Account{Name: "Revenue"}, &revenue)
+
+	var fresh accountDTO
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &fresh)
+	if fresh.LastTransactionAt != nil {
+		t.Fatalf("LastTransactionAt of a brand new account = %v, want nil", fresh.LastTransactionAt)
+	}
+
+	first := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	second := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   first,
+		Description: "Invoice #1",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
+		},
+	}, nil)
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   second,
+		Description: "Invoice #2",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 5, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -5, CurrencyID: usd.ID},
+		},
+	}, nil)
+
+	var got accountDTO
+	do(t, h, http.MethodGet, fmt.Sprintf("/accounts/%d", cash.ID), nil, &got)
+	if got.LastTransactionAt == nil || !got.LastTransactionAt.Equal(second) {
+		t.Fatalf("LastTransactionAt via GET /accounts/{id} = %v, want %v (the most recent transaction)", got.LastTransactionAt, second)
+	}
+
+	var list []accountDTO
+	do(t, h, http.MethodGet, "/accounts", nil, &list)
+	for _, a := range list {
+		if a.ID == cash.ID {
+			if a.LastTransactionAt == nil || !a.LastTransactionAt.Equal(second) {
+				t.Fatalf("LastTransactionAt via GET /accounts = %v, want %v", a.LastTransactionAt, second)
+			}
+		}
+		if a.ID == revenue.ID {
+			if a.LastTransactionAt == nil || !a.LastTransactionAt.Equal(second) {
+				t.Fatalf("Revenue's LastTransactionAt = %v, want %v (it has entries too)", a.LastTransactionAt, second)
+			}
+		}
+	}
+}
+
 func TestAccountLedger(t *testing.T) {
 	h := newTestHandler(t)
 	usd := createTestCurrency(t, h, "USD")

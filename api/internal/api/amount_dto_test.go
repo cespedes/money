@@ -29,12 +29,13 @@ type currencyAmountDTO struct {
 }
 
 type accountDTO struct {
-	ID       int64               `json:"id"`
-	Name     string              `json:"name"`
-	Code     *string             `json:"code,omitempty"`
-	ParentID *int64              `json:"parent_id,omitempty"`
-	Position int64               `json:"position"`
-	Balances []currencyAmountDTO `json:"balances"`
+	ID                int64               `json:"id"`
+	Name              string              `json:"name"`
+	Code              *string             `json:"code,omitempty"`
+	ParentID          *int64              `json:"parent_id,omitempty"`
+	Position          int64               `json:"position"`
+	Balances          []currencyAmountDTO `json:"balances"`
+	LastTransactionAt *time.Time          `json:"last_transaction_at,omitempty"`
 }
 
 type ledgerEntryDTO struct {

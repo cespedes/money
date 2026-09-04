@@ -21,6 +21,10 @@ type Account struct {
 	// Get. An account with no entries in a given currency has no entry
 	// for it here, rather than a zero one.
 	Balances []CurrencyAmount `json:"balances"`
+	// LastTransactionAt is the timestamp of the most recent transaction
+	// with an entry on this account (not including any child accounts',
+	// matching Balances), or nil if it has none.
+	LastTransactionAt *time.Time `json:"last_transaction_at,omitempty"`
 }
 
 // CurrencyAmount is an amount posted in a specific currency.
