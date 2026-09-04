@@ -51,9 +51,12 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.accounts.SetSize(msg.Width, msg.Height-6)
-		m.transactions.SetSize(msg.Width, msg.Height-6)
-		m.currencies.SetSize(msg.Width, msg.Height-6)
+		// chromeHeight is title, blank, blank, footer (see View()) — the
+		// lines around each tab's own content that aren't available to it.
+		const chromeHeight = 4
+		m.accounts.SetSize(msg.Width, msg.Height-chromeHeight)
+		m.transactions.SetSize(msg.Width, msg.Height-chromeHeight)
+		m.currencies.SetSize(msg.Width, msg.Height-chromeHeight)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -115,16 +118,7 @@ func (m App) currentEditing() bool {
 func (m App) View() tea.View {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Money — Accounting TUI"))
-	b.WriteString("\n\n")
-
-	for i, t := range tabLabels {
-		if tab(i) == m.active {
-			b.WriteString(tabActiveStyle.Render(t))
-		} else {
-			b.WriteString(tabInactiveStyle.Render(t))
-		}
-	}
+	b.WriteString(titleStyle.Render("Money — " + tabLabels[m.active]))
 	b.WriteString("\n\n")
 
 	switch m.active {

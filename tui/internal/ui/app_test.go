@@ -211,11 +211,25 @@ func TestApp_View(t *testing.T) {
 	if !v.AltScreen {
 		t.Error("expected AltScreen to be true")
 	}
-	if !strings.Contains(v.Content, "Money") {
-		t.Errorf("view content = %q, want it to contain the title", v.Content)
+	if !strings.Contains(v.Content, "Money — Accounts") {
+		t.Errorf("view content = %q, want the title to name the active tab (Accounts)", v.Content)
 	}
-	if !strings.Contains(v.Content, "Accounts") || !strings.Contains(v.Content, "Transactions") {
-		t.Errorf("view content = %q, want both tab labels", v.Content)
+}
+
+// TestApp_TitleTracksActiveTab checks that the title line names whichever
+// tab is currently active — the only place the active tab is named at
+// all now that there's no separate row of tab labels.
+func TestApp_TitleTracksActiveTab(t *testing.T) {
+	m := newTestApp(t)
+
+	for _, want := range []string{"Transactions", "Currencies", "Accounts"} {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		m = updated.(App)
+
+		v := m.View()
+		if !strings.Contains(v.Content, "Money — "+want) {
+			t.Errorf("active = %v: view content = %q, want the title to say %q", m.active, v.Content, "Money — "+want)
+		}
 	}
 }
 
