@@ -152,6 +152,17 @@ const createFieldWidth = 16
 // together, so the parent dropdown lines up under the row above it.
 const parentPickerWidth = 3*createFieldWidth + 4
 
+// columnGap is the whitespace joining adjacent field columns in a pop-up
+// form (see createPopup/ledgerEntryPopup), matching the "  " literal
+// those functions join columns with.
+const columnGap = 2
+
+// fieldPickerOffset is how many columns (0-indexed) precede a pop-up
+// field whose dropdown should line up underneath it — see indentLines.
+func fieldPickerOffset(columnIndex int) int {
+	return columnIndex * (createFieldWidth + columnGap)
+}
+
 func newAccountsModel(c *client.Client) accountsModel {
 	columns := []table.Column{
 		{Title: "Code", Width: 10},
@@ -1242,14 +1253,14 @@ func (m accountsModel) ledgerEntryPopup() string {
 		strings.Join(headers1, "  ") + "\n" +
 		strings.Join(row1Values, "  ")
 	if m.ledgerEntryFocus == focusEntryCurrency {
-		content += "\n" + stripPickerHeader(m.ledgerCurrencyPicker.View())
+		content += "\n" + indentLines(stripPickerHeader(m.ledgerCurrencyPicker.View()), fieldPickerOffset(3))
 	}
 	content += "\n\n" + strings.Join(headers2, "  ") + "\n" + strings.Join(row2Values, "  ")
 	if m.ledgerEntryFocus == focusEntryOtherAccount {
 		content += "\n" + stripPickerHeader(m.ledgerAccountPicker.View())
 	}
 	if m.ledgerEntryFocus == focusEntryOtherCurrency {
-		content += "\n" + stripPickerHeader(m.ledgerOtherCurrencyPicker.View())
+		content += "\n" + indentLines(stripPickerHeader(m.ledgerOtherCurrencyPicker.View()), fieldPickerOffset(2))
 	}
 	if m.err != "" {
 		content += "\n\n" + errorStyle.Render("Error: "+m.err)

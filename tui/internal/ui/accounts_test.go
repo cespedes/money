@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"money/tui/internal/client"
 )
@@ -1056,6 +1057,80 @@ func TestAccountsModel_LedgerEntryPopup(t *testing.T) {
 
 	if got := m.View(); !strings.Contains(got, "Transactions for") {
 		t.Errorf("View() should still render the ledger table under the pop-up, got:\n%s", got)
+	}
+}
+
+// TestAccountsModel_LedgerEntryCurrencyPickerAlignsUnderColumn is a
+// regression test: the Currency field's dropdown must line up under the
+// "Currency" column header, not flush against the pop-up's left edge —
+// which is only correct for a field in the first column (see
+// fieldPickerOffset). This checks both rows' Currency picker, since row
+// 1's is the last of four columns and row 2's the last of three.
+func TestAccountsModel_LedgerEntryCurrencyPickerAlignsUnderColumn(t *testing.T) {
+	eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
+	m := newTestLedgerModel(t, nil, nil, testUSD, eur)
+	m, _ = m.Update(keyPress("n"))
+
+	// Column positions are measured on the plain-text (ANSI-stripped)
+	// rendering, since a styled word's own escape codes shift its raw
+	// byte offset without moving it visually. Both rows' header lines
+	// contain "Currency" (row 1's header, then row 2's), so pick out the
+	// first or last occurrence depending on which row's column we want.
+	plainLines := func(popup string) []string {
+		return strings.Split(ansi.Strip(popup), "\n")
+	}
+	firstCurrencyColumn := func(popup string) int {
+		for _, line := range plainLines(popup) {
+			if i := strings.Index(line, "Currency"); i >= 0 {
+				return i
+			}
+		}
+		t.Fatal("popup has no \"Currency\" column header")
+		return -1
+	}
+	lastCurrencyColumn := func(popup string) int {
+		lines := plainLines(popup)
+		for i := len(lines) - 1; i >= 0; i-- {
+			if j := strings.Index(lines[i], "Currency"); j >= 0 {
+				return j
+			}
+		}
+		t.Fatal("popup has no \"Currency\" column header")
+		return -1
+	}
+	dropdownColumn := func(popup string) int {
+		for _, line := range plainLines(popup) {
+			if i := strings.Index(line, "EUR"); i >= 0 {
+				return i
+			}
+		}
+		t.Fatal("popup has no EUR row in the currency dropdown")
+		return -1
+	}
+
+	// Every dropdown row sits 1 column further right than its header,
+	// from the table component's own built-in Cell padding (Padding(0,
+	// 1)) — a structural offset shared by every picker in the TUI
+	// (including the Parent one, at column 0), not something to correct
+	// for here.
+	const cellPadding = 1
+
+	// Row 1's Currency field (the 4th of 4 columns).
+	for m.ledgerEntryFocus != focusEntryCurrency {
+		m, _ = m.Update(keyPress("tab"))
+	}
+	popup := m.ledgerEntryPopup()
+	if got, want := dropdownColumn(popup), firstCurrencyColumn(popup)+cellPadding; got != want {
+		t.Errorf("row 1 currency dropdown starts at column %d, want %d (under the Currency header)", got, want)
+	}
+
+	// Row 2's Currency field (the 3rd of 3 columns).
+	for m.ledgerEntryFocus != focusEntryOtherCurrency {
+		m, _ = m.Update(keyPress("tab"))
+	}
+	popup = m.ledgerEntryPopup()
+	if got, want := dropdownColumn(popup), lastCurrencyColumn(popup)+cellPadding; got != want {
+		t.Errorf("row 2 currency dropdown starts at column %d, want %d (under the Currency header)", got, want)
 	}
 }
 

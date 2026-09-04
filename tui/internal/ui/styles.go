@@ -102,6 +102,22 @@ func stripPickerHeader(view string) string {
 	return view
 }
 
+// indentLines prefixes every line of view with n spaces, so a dropdown
+// picker lines up under whichever field column it belongs to (see
+// fieldPickerOffset) instead of always sitting flush against the pop-up's
+// left edge — which is only correct for a picker in the first column.
+func indentLines(view string, n int) string {
+	if n <= 0 {
+		return view
+	}
+	prefix := strings.Repeat(" ", n)
+	lines := strings.Split(view, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
+}
+
 // overlayCentered composites popup on top of background, centered within
 // a width x height viewport (e.g. the terminal size), so it reads as a
 // pop-up floating over whatever's currently on screen. If width or height
