@@ -374,6 +374,124 @@ func TestTransactionStore_CreateRejectsUnbalancedInOneCurrency(t *testing.T) {
 	}
 }
 
+// TestTransactionStore_CreateAllowsCurrencyExchange proves the balance
+// exception for an implicit currency exchange: exactly two currencies,
+// each with a nonzero net of opposite sign, is accepted even though
+// neither currency sums to zero on its own.
+func TestTransactionStore_CreateAllowsCurrencyExchange(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	created, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Exchange USD for EUR",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 850, CurrencyID: eur.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(created.Entries) != 2 {
+		t.Fatalf("Create: got %d entries, want 2", len(created.Entries))
+	}
+}
+
+// TestTransactionStore_CreateRejectsSameSignTwoCurrencies proves the
+// exchange exception only applies to opposite-signed nets: two
+// currencies with nonzero nets of the *same* sign don't represent an
+// exchange (money would appear from nowhere in both), and are still
+// rejected.
+func TestTransactionStore_CreateRejectsSameSignTwoCurrencies(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	_, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Not an exchange",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 850, CurrencyID: eur.ID},
+		},
+	})
+	if !errors.Is(err, store.ErrUnbalanced) {
+		t.Fatalf("Create: got %v, want ErrUnbalanced", err)
+	}
+}
+
+// TestTransactionStore_CreateRejectsThreeCurrencyExchange proves the
+// exchange exception is specifically for exactly two currencies: three
+// currencies with nonzero nets, even with mixed signs, are still
+// rejected.
+func TestTransactionStore_CreateRejectsThreeCurrencyExchange(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+	gbp := createTestCurrency(t, s, "GBP")
+
+	_, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Not a two-currency exchange",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 500, CurrencyID: eur.ID},
+			{AccountID: cash.ID, Amount: 400, CurrencyID: gbp.ID},
+		},
+	})
+	if !errors.Is(err, store.ErrUnbalanced) {
+		t.Fatalf("Create: got %v, want ErrUnbalanced", err)
+	}
+}
+
+// TestDatabaseTriggerAllowsCurrencyExchange writes directly to
+// transaction_entries, bypassing TransactionStore.Create's own balance
+// check, to confirm the database trigger independently accepts the same
+// two-currency-opposite-sign exception (see
+// TestDatabaseTriggerRejectsUnbalancedEntries for the negative case).
+func TestDatabaseTriggerAllowsCurrencyExchange(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.NewPool(t)
+	s := store.New(pool)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var transactionID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO transactions ("timestamp", description) VALUES (now(), 'Exchange') RETURNING id`,
+	).Scan(&transactionID)
+	if err != nil {
+		t.Fatalf("insert transaction: %v", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO transaction_entries (transaction_id, account_id, amount, currency_id)
+		 VALUES ($1, $2, -1000, $3), ($1, $2, 850, $4)`,
+		transactionID, cash.ID, usd.ID, eur.ID)
+	if err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit of a two-currency exchange: got %v, want it accepted", err)
+	}
+}
+
 // TestTransactionStore_CreateAllowsBalancedMultiCurrency is the positive
 // counterpart: a transaction with two independently-balanced currencies
 // in the same transaction is accepted.

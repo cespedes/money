@@ -4,9 +4,13 @@
 -- currency they're posted in (e.g. cents for a currency with 2 decimal
 -- places) to avoid floating point rounding errors. A positive amount is
 -- a debit, a negative amount is a credit; the entries of a transaction
--- must always sum to zero within each currency (double-entry
--- bookkeeping) — amounts in different currencies are never summed
--- together directly.
+-- must sum to zero within each currency (double-entry bookkeeping) —
+-- amounts in different currencies are never summed together directly —
+-- with one exception: a transaction touching exactly two currencies,
+-- each with a nonzero net amount of opposite sign, is also accepted, as
+-- an implicit currency exchange between them (see
+-- transaction_implied_prices below and check_transaction_balance's own
+-- comment).
 
 -- position orders accounts for display among their siblings — other
 -- accounts with the same parent_id (or, for parent_id IS NULL, other root
@@ -85,15 +89,15 @@ CREATE INDEX idx_transaction_entries_transaction_id ON transaction_entries (tran
 CREATE INDEX idx_transaction_entries_account_id ON transaction_entries (account_id);
 CREATE INDEX idx_transaction_entries_currency_id ON transaction_entries (currency_id);
 
--- Defense in depth: the API validates that entries sum to zero (per
--- currency) before writing, but this deferred constraint trigger enforces
--- the same invariant at the database level for any transaction_entries
--- change, regardless of what wrote it.
+-- Defense in depth: the API validates the balance rule (see the header
+-- comment above, and TransactionStore.Create's entriesBalance) before
+-- writing, but this deferred constraint trigger enforces the same rule
+-- at the database level for any transaction_entries change, regardless
+-- of what wrote it.
 CREATE OR REPLACE FUNCTION check_transaction_balance() RETURNS trigger AS $$
 DECLARE
     affected_transaction_id BIGINT;
-    unbalanced_currency_id  BIGINT;
-    unbalanced_amount       BIGINT;
+    nonzero_sums            BIGINT[];
 BEGIN
     IF TG_OP = 'DELETE' THEN
         affected_transaction_id := OLD.transaction_id;
@@ -101,20 +105,31 @@ BEGIN
         affected_transaction_id := NEW.transaction_id;
     END IF;
 
-    SELECT currency_id, SUM(amount)
-    INTO unbalanced_currency_id, unbalanced_amount
-    FROM transaction_entries
-    WHERE transaction_id = affected_transaction_id
-    GROUP BY currency_id
-    HAVING SUM(amount) <> 0
-    LIMIT 1;
+    SELECT array_agg(sum ORDER BY currency_id)
+    INTO nonzero_sums
+    FROM (
+        SELECT currency_id, SUM(amount) AS sum
+        FROM transaction_entries
+        WHERE transaction_id = affected_transaction_id
+        GROUP BY currency_id
+        HAVING SUM(amount) <> 0
+    ) unbalanced;
 
-    IF unbalanced_currency_id IS NOT NULL THEN
-        RAISE EXCEPTION 'transaction % entries in currency % do not sum to zero (got %)',
-            affected_transaction_id, unbalanced_currency_id, unbalanced_amount;
+    -- No currency with a nonzero net at all: the ordinary, fully-balanced
+    -- case.
+    IF nonzero_sums IS NULL THEN
+        RETURN NULL;
     END IF;
 
-    RETURN NULL;
+    -- Exactly two currencies with a nonzero net, of opposite sign, is
+    -- accepted too: it's an implicit currency exchange rather than a
+    -- bookkeeping error (see transaction_implied_prices).
+    IF array_length(nonzero_sums, 1) = 2 AND sign(nonzero_sums[1]) <> sign(nonzero_sums[2]) THEN
+        RETURN NULL;
+    END IF;
+
+    RAISE EXCEPTION 'transaction % is not balanced (nonzero per-currency sums: %)',
+        affected_transaction_id, nonzero_sums;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -122,3 +137,50 @@ CREATE CONSTRAINT TRIGGER trg_check_transaction_balance
     AFTER INSERT OR UPDATE OR DELETE ON transaction_entries
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION check_transaction_balance();
+
+-- A transaction touching exactly two currencies, with a nonzero net
+-- amount in each of opposite sign (see check_transaction_balance above,
+-- which accepts this shape specifically so it can be recorded), is an
+-- implicit currency exchange: the currency that left (base_currency_id,
+-- the negative net) was worth this many units of the currency that
+-- arrived (quote_currency_id, the positive net), as of the transaction's
+-- own timestamp. This view derives that rate live from
+-- transaction_entries every time rather than storing a copy, so it can
+-- never go stale relative to the transaction it comes from — editing or
+-- deleting the transaction is reflected immediately, with no separate
+-- currency_prices row to keep in sync. CurrencyPriceStore folds these
+-- rows in alongside currency_prices' own stored rows wherever an
+-- observation is needed (RateAt, List) — see its own comments for how
+-- the two are told apart (a currency_prices.id of 0 and a non-nil
+-- transaction_id).
+CREATE VIEW transaction_implied_prices AS
+WITH sums AS (
+    SELECT
+        te.transaction_id,
+        te.currency_id,
+        SUM(te.amount)     AS amount,
+        c.decimal_places
+    FROM transaction_entries te
+    JOIN currencies c ON c.id = te.currency_id
+    GROUP BY te.transaction_id, te.currency_id, c.decimal_places
+    HAVING SUM(te.amount) <> 0
+),
+qualifying AS (
+    SELECT transaction_id
+    FROM sums
+    GROUP BY transaction_id
+    HAVING COUNT(*) = 2 AND MIN(sign(amount)) <> MAX(sign(amount))
+)
+SELECT
+    t.id AS transaction_id,
+    MAX(CASE WHEN s.amount < 0 THEN s.currency_id END) AS base_currency_id,
+    MAX(CASE WHEN s.amount > 0 THEN s.currency_id END) AS quote_currency_id,
+    (
+        MAX(CASE WHEN s.amount > 0 THEN s.amount::NUMERIC / POWER(10, s.decimal_places) END)
+        / MAX(CASE WHEN s.amount < 0 THEN -s.amount::NUMERIC / POWER(10, s.decimal_places) END)
+    )::DOUBLE PRECISION AS rate,
+    t."timestamp" AS as_of
+FROM sums s
+JOIN qualifying q ON q.transaction_id = s.transaction_id
+JOIN transactions t ON t.id = s.transaction_id
+GROUP BY t.id, t."timestamp";

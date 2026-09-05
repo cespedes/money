@@ -255,6 +255,142 @@ func TestCurrencyPriceStore_RateAt_ChainedThroughIntermediate(t *testing.T) {
 	}
 }
 
+// TestCurrencyPriceStore_List_IncludesTransactionImplied proves that a
+// currency-exchange transaction (see
+// TestTransactionStore_CreateAllowsCurrencyExchange) shows up in List
+// alongside stored currency_prices rows, distinguished by a non-nil
+// TransactionID and an ID of 0.
+func TestCurrencyPriceStore_List_IncludesTransactionImplied(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+	at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	stored, err := s.CurrencyPrices.Create(ctx, models.CurrencyPrice{
+		BaseCurrencyID: eur.ID, QuoteCurrencyID: usd.ID, Rate: 1.16, AsOf: at,
+	})
+	if err != nil {
+		t.Fatalf("create stored price: %v", err)
+	}
+
+	txn, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   at.Add(time.Hour),
+		Description: "Exchange USD for EUR",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 850, CurrencyID: eur.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create exchange transaction: %v", err)
+	}
+
+	list, err := s.CurrencyPrices.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("List: got %d prices, want 2: %+v", len(list), list)
+	}
+
+	if list[0].ID != stored.ID || list[0].TransactionID != nil {
+		t.Errorf("List[0] (stored) = %+v", list[0])
+	}
+
+	implied := list[1]
+	if implied.ID != 0 {
+		t.Errorf("implied price ID = %d, want 0", implied.ID)
+	}
+	if implied.TransactionID == nil || *implied.TransactionID != txn.ID {
+		t.Errorf("implied price TransactionID = %v, want %d", implied.TransactionID, txn.ID)
+	}
+	if implied.BaseCurrencyID != usd.ID || implied.QuoteCurrencyID != eur.ID {
+		t.Errorf("implied price currencies = base %d quote %d, want base %d quote %d",
+			implied.BaseCurrencyID, implied.QuoteCurrencyID, usd.ID, eur.ID)
+	}
+	if want := 0.85; abs(implied.Rate-want) > 1e-9 { // 850 EUR received / 1000 USD spent
+		t.Errorf("implied price rate = %v, want %v", implied.Rate, want)
+	}
+	if !implied.AsOf.Equal(txn.Timestamp) {
+		t.Errorf("implied price as_of = %v, want %v", implied.AsOf, txn.Timestamp)
+	}
+}
+
+// TestCurrencyPriceStore_RateAt_UsesTransactionImplied proves RateAt
+// picks up a currency-exchange transaction's implicit rate exactly like
+// a stored observation, with no currency_prices row involved at all.
+func TestCurrencyPriceStore_RateAt_UsesTransactionImplied(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, _ := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+	at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	if _, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   at,
+		Description: "Exchange USD for EUR",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 850, CurrencyID: eur.ID},
+		},
+	}); err != nil {
+		t.Fatalf("create exchange transaction: %v", err)
+	}
+
+	rate, err := s.CurrencyPrices.RateAt(ctx, usd.ID, eur.ID, at)
+	if err != nil {
+		t.Fatalf("RateAt: %v", err)
+	}
+	if want := 0.85; abs(rate-want) > 1e-9 {
+		t.Fatalf("RateAt(USD, EUR) = %v, want %v", rate, want)
+	}
+
+	// And the inverse direction, exactly like a stored observation.
+	rate, err = s.CurrencyPrices.RateAt(ctx, eur.ID, usd.ID, at)
+	if err != nil {
+		t.Fatalf("RateAt(inverse): %v", err)
+	}
+	if want := 1 / 0.85; abs(rate-want) > 1e-9 {
+		t.Fatalf("RateAt(EUR, USD) = %v, want %v", rate, want)
+	}
+}
+
+// TestCurrencyPriceStore_List_IgnoresBalancedMultiCurrencyTransaction
+// proves an ordinary, fully-balanced multi-currency transaction (using a
+// clearing account, each currency summing to zero on its own) is *not*
+// mistaken for an implicit exchange.
+func TestCurrencyPriceStore_List_IgnoresBalancedMultiCurrencyTransaction(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+	eur := createTestCurrency(t, s, "EUR")
+
+	if _, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Mixed currencies, both balanced",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 100, CurrencyID: eur.ID},
+			{AccountID: revenue.ID, Amount: -100, CurrencyID: eur.ID},
+		},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	list, err := s.CurrencyPrices.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("List: got %+v, want none (every currency balances on its own)", list)
+	}
+}
+
 func abs(f float64) float64 {
 	if f < 0 {
 		return -f

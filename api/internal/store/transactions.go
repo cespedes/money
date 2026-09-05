@@ -97,20 +97,43 @@ func (s *TransactionStore) entriesFor(ctx context.Context, q querier, transactio
 	return entries, nil
 }
 
-// Create inserts a transaction and its entries atomically. It rejects
-// transactions whose entries do not sum to zero within each currency
-// before touching the database (amounts in different currencies are
-// never summed together); the database also enforces the same invariant
-// as a safety net (see db/schema.sql).
-func (s *TransactionStore) Create(ctx context.Context, t models.Transaction) (models.Transaction, error) {
-	sums := make(map[int64]int64, len(t.Entries))
-	for _, e := range t.Entries {
+// entriesBalance reports whether entries may be posted together as one
+// transaction. The ordinary case is that they sum to zero within every
+// currency (double-entry bookkeeping; amounts in different currencies
+// are never summed together) — but exactly two currencies with a
+// nonzero net of opposite sign is accepted too, as an implicit exchange
+// between them (see db/schema.sql's transaction_implied_prices view,
+// which turns such a transaction into a currency-price observation).
+// db/schema.sql's check_transaction_balance trigger re-validates the
+// same rule at the database level; keep both in sync.
+func entriesBalance(entries []models.Entry) bool {
+	sums := make(map[int64]int64, len(entries))
+	for _, e := range entries {
 		sums[e.CurrencyID] += e.Amount
 	}
+	var nonzero []int64
 	for _, sum := range sums {
 		if sum != 0 {
-			return models.Transaction{}, ErrUnbalanced
+			nonzero = append(nonzero, sum)
 		}
+	}
+	switch len(nonzero) {
+	case 0:
+		return true
+	case 2:
+		return (nonzero[0] > 0) != (nonzero[1] > 0)
+	default:
+		return false
+	}
+}
+
+// Create inserts a transaction and its entries atomically. It rejects
+// transactions whose entries don't balance (see entriesBalance) before
+// touching the database; the database also enforces the same rule as a
+// safety net (see db/schema.sql).
+func (s *TransactionStore) Create(ctx context.Context, t models.Transaction) (models.Transaction, error) {
+	if !entriesBalance(t.Entries) {
+		return models.Transaction{}, ErrUnbalanced
 	}
 
 	tx, err := s.pool.Begin(ctx)

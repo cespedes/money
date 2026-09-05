@@ -31,18 +31,26 @@ A small double-entry accounting application, made of three parts:
   decimal digits to render), and an optional `isin`.
 - **Transactions** have a `timestamp`, a `description`, and a list of
   **entries**, each an `(account_id, amount, currency_id)` triple. The
-  entries of a transaction must always sum to zero *within each currency*
+  entries of a transaction must sum to zero *within each currency*
   (double-entry bookkeeping) — amounts in different currencies are never
   summed together, so a single transaction can freely mix currencies as
   long as each one balances on its own. A positive amount is a debit, a
-  negative amount is a credit.
+  negative amount is a credit. There's one exception: a transaction
+  touching *exactly two* currencies, each with a nonzero net amount of
+  opposite sign, is accepted too, as an implicit currency exchange
+  between them — see **Currency prices** below.
 - **Currency prices** record a directly-observed exchange rate: one unit
   of `base_currency_id` was worth `rate` units of `quote_currency_id`, as
   of a specific instant (`as_of`). Unlike a transaction's `amount`, `rate`
   is an approximate market price — a plain floating-point number, not an
   integer tied to either currency's `decimal_places` — since it's not a
   ledger quantity. See below for how a rate is looked up for an instant
-  that wasn't directly recorded.
+  that wasn't directly recorded. `GET /currency-prices` also lists a
+  read-only observation for every currency-exchange transaction (see
+  above) — recognizable by a `transaction_id` field and an `id` of `0`,
+  since it isn't a row of its own: its rate is derived live from that
+  transaction's entries every time, so it always matches the transaction
+  and disappears if it's deleted, with nothing to keep in sync by hand.
 
 Monetary amounts (transaction/ledger entry `amount`, ledger `balance`,
 account `balances`) are stored internally as integers in the minor unit of
@@ -157,7 +165,7 @@ All endpoints accept and return JSON.
 | GET    | `/accounts/{id}/transactions` | List an account's ledger (see below) |
 | POST   | `/accounts/{id}/move` | Move an account up/down among its siblings (see below) |
 | GET    | `/transactions`     | List transactions (with their entries)    |
-| POST   | `/transactions`     | Create a transaction (entries must sum to zero per currency) |
+| POST   | `/transactions`     | Create a transaction (entries must sum to zero per currency, or be a two-currency exchange — see above) |
 | GET    | `/transactions/{id}`| Get a transaction (with its entries)      |
 | DELETE | `/transactions/{id}`| Delete a transaction                      |
 | GET    | `/currencies`       | List currencies                           |
@@ -165,7 +173,7 @@ All endpoints accept and return JSON.
 | GET    | `/currencies/{id}`  | Get a currency                            |
 | PUT    | `/currencies/{id}`  | Update a currency                         |
 | DELETE | `/currencies/{id}`  | Delete a currency                         |
-| GET    | `/currency-prices`  | List currency prices                      |
+| GET    | `/currency-prices`  | List currency prices (including transaction-implied ones — see above) |
 | POST   | `/currency-prices`  | Record an exchange rate observation       |
 | GET    | `/currency-prices/{id}` | Get a currency price                  |
 | DELETE | `/currency-prices/{id}` | Delete a currency price               |

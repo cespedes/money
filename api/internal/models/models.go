@@ -65,12 +65,21 @@ type Currency struct {
 // CurrencyPriceStore.RateAt for how observations are combined (linear
 // interpolation over time, and chained through intermediate currencies)
 // to answer a query that doesn't exactly match a stored one.
+//
+// TransactionID is nil for an ordinary observation stored as its own
+// currency_prices row (ID is that row's real ID). It's non-nil instead
+// for an observation implicitly derived from a transaction that
+// exchanged exactly two currencies (see db/schema.sql's
+// transaction_implied_prices view) — such an observation isn't a stored
+// row at all, so ID is always 0 for it; it can only be changed by
+// editing or deleting that transaction, never directly.
 type CurrencyPrice struct {
 	ID              int64     `json:"id"`
 	BaseCurrencyID  int64     `json:"base_currency_id"`
 	QuoteCurrencyID int64     `json:"quote_currency_id"`
 	Rate            float64   `json:"rate"`
 	AsOf            time.Time `json:"as_of"`
+	TransactionID   *int64    `json:"transaction_id,omitempty"`
 }
 
 // Entry is one leg of a transaction: a signed amount, in a specific

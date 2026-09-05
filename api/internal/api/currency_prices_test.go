@@ -110,6 +110,61 @@ func TestCreateCurrencyPrice_DuplicateObservation(t *testing.T) {
 	}
 }
 
+// TestCurrencyPricesReflectsTransactionExchange proves a currency-
+// exchange transaction (see TestCreateTransaction_CurrencyExchange)
+// shows up in GET /currency-prices as a read-only, transaction-implied
+// observation (transaction_id set, id 0) alongside any stored rows, and
+// feeds GET /currency-prices/rate exactly like one.
+func TestCurrencyPricesReflectsTransactionExchange(t *testing.T) {
+	h := newTestHandler(t)
+	cash, _ := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD")
+	eur := createTestCurrency(t, h, "EUR")
+	at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	var created transactionDTO
+	rec := do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   at,
+		Description: "Exchange USD for EUR",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: -10, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 8.5, CurrencyID: eur.ID},
+		},
+	}, &created)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create transaction: status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var list []models.CurrencyPrice
+	rec = do(t, h, http.MethodGet, "/currency-prices", nil, &list)
+	if rec.Code != http.StatusOK || len(list) != 1 {
+		t.Fatalf("list: status=%d got=%+v", rec.Code, list)
+	}
+	implied := list[0]
+	if implied.ID != 0 {
+		t.Errorf("implied price id = %d, want 0", implied.ID)
+	}
+	if implied.TransactionID == nil || *implied.TransactionID != created.ID {
+		t.Errorf("implied price transaction_id = %v, want %d", implied.TransactionID, created.ID)
+	}
+	if implied.BaseCurrencyID != usd.ID || implied.QuoteCurrencyID != eur.ID {
+		t.Errorf("implied price currencies = base %d quote %d, want base %d quote %d",
+			implied.BaseCurrencyID, implied.QuoteCurrencyID, usd.ID, eur.ID)
+	}
+	if want := 0.85; abs(implied.Rate-want) > 1e-9 {
+		t.Errorf("implied price rate = %v, want %v", implied.Rate, want)
+	}
+
+	var body map[string]any
+	rec = do(t, h, http.MethodGet, rateURL(usd.ID, eur.ID, at.Format(time.RFC3339)), nil, &body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rate: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := body["rate"].(float64); abs(got-0.85) > 1e-9 {
+		t.Fatalf("rate = %v, want 0.85", got)
+	}
+}
+
 func abs(f float64) float64 {
 	if f < 0 {
 		return -f

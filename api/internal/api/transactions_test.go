@@ -68,6 +68,33 @@ func TestTransactionsCRUD(t *testing.T) {
 	}
 }
 
+// TestCreateTransaction_CurrencyExchange proves a transaction touching
+// exactly two currencies, with a nonzero net of opposite sign in each,
+// is accepted as an implicit currency exchange rather than rejected as
+// unbalanced (see TestCurrencyPricesReflectsTransactionExchange for how
+// it then surfaces as a currency-price observation).
+func TestCreateTransaction_CurrencyExchange(t *testing.T) {
+	h := newTestHandler(t)
+	cash, _ := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD")
+	eur := createTestCurrency(t, h, "EUR")
+
+	txn := transactionDTO{
+		Timestamp:   time.Now(),
+		Description: "Exchange USD for EUR",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: -10, CurrencyID: usd.ID},
+			{AccountID: cash.ID, Amount: 8.5, CurrencyID: eur.ID},
+		},
+	}
+
+	var created transactionDTO
+	rec := do(t, h, http.MethodPost, "/transactions", txn, &created)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
 // TestCreateTransaction_DecimalAmounts confirms an entry's amount is a
 // real decimal number in the currency's own units, not an integer count
 // of minor units — e.g. 10.5 for a currency with 2 decimal places means

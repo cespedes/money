@@ -23,14 +23,42 @@ func NewCurrencyPriceStore(pool *pgxpool.Pool) *CurrencyPriceStore {
 
 const currencyPriceColumns = `id, base_currency_id, quote_currency_id, rate, as_of`
 
+// currencyPriceUnionSQL is every currency-price observation there is: the
+// rows actually stored in currency_prices (transaction_id NULL, real id),
+// plus every transaction-implied observation (see db/schema.sql's
+// transaction_implied_prices view), which always reports id 0 since it
+// isn't a stored row (see models.CurrencyPrice's own doc comment).
+// CurrencyPriceStore folds these together wherever an observation is
+// needed (List, RateAt via pricesForCurrency) instead of just querying
+// currency_prices directly.
+const currencyPriceUnionSQL = `
+	SELECT id, base_currency_id, quote_currency_id, rate, as_of, NULL::BIGINT AS transaction_id
+	FROM currency_prices
+	UNION ALL
+	SELECT 0, base_currency_id, quote_currency_id, rate, as_of, transaction_id
+	FROM transaction_implied_prices
+`
+
 func scanCurrencyPrice(row pgx.Row) (models.CurrencyPrice, error) {
 	var p models.CurrencyPrice
 	err := row.Scan(&p.ID, &p.BaseCurrencyID, &p.QuoteCurrencyID, &p.Rate, &p.AsOf)
 	return p, err
 }
 
+// scanCombinedCurrencyPrice is like scanCurrencyPrice, but for a row of
+// currencyPriceUnionSQL, which also carries TransactionID.
+func scanCombinedCurrencyPrice(row pgx.Row) (models.CurrencyPrice, error) {
+	var p models.CurrencyPrice
+	err := row.Scan(&p.ID, &p.BaseCurrencyID, &p.QuoteCurrencyID, &p.Rate, &p.AsOf, &p.TransactionID)
+	return p, err
+}
+
+// List returns every currency-price observation there is, in as_of
+// order: both rows stored in currency_prices and every transaction-
+// implied observation (see currencyPriceUnionSQL) — the latter
+// distinguished by a non-nil TransactionID.
 func (s *CurrencyPriceStore) List(ctx context.Context) ([]models.CurrencyPrice, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+currencyPriceColumns+` FROM currency_prices ORDER BY as_of`)
+	rows, err := s.pool.Query(ctx, `SELECT * FROM (`+currencyPriceUnionSQL+`) combined ORDER BY as_of`)
 	if err != nil {
 		return nil, fmt.Errorf("query currency prices: %w", err)
 	}
@@ -38,7 +66,7 @@ func (s *CurrencyPriceStore) List(ctx context.Context) ([]models.CurrencyPrice, 
 
 	var prices []models.CurrencyPrice
 	for rows.Next() {
-		p, err := scanCurrencyPrice(rows)
+		p, err := scanCombinedCurrencyPrice(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan currency price: %w", err)
 		}
@@ -50,6 +78,10 @@ func (s *CurrencyPriceStore) List(ctx context.Context) ([]models.CurrencyPrice, 
 	return prices, nil
 }
 
+// Get looks up a stored currency_prices row by ID. It never returns a
+// transaction-implied observation (see List) — those aren't stored rows
+// and have no ID of their own to look up by; access them through the
+// transaction they came from instead.
 func (s *CurrencyPriceStore) Get(ctx context.Context, id int64) (models.CurrencyPrice, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+currencyPriceColumns+` FROM currency_prices WHERE id = $1`, id)
 	p, err := scanCurrencyPrice(row)
@@ -148,11 +180,12 @@ func (s *CurrencyPriceStore) RateAt(ctx context.Context, baseID, quoteID int64, 
 	return 0, ErrNoRate
 }
 
-// pricesForCurrency returns every currency_prices row that has
-// currencyID on either side (as base or quote), in as_of order.
+// pricesForCurrency returns every currency-price observation — stored or
+// transaction-implied (see currencyPriceUnionSQL) — that has currencyID
+// on either side (as base or quote), in as_of order.
 func (s *CurrencyPriceStore) pricesForCurrency(ctx context.Context, currencyID int64) ([]models.CurrencyPrice, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+currencyPriceColumns+` FROM currency_prices
+		`SELECT * FROM (`+currencyPriceUnionSQL+`) combined
 		 WHERE base_currency_id = $1 OR quote_currency_id = $1
 		 ORDER BY as_of`, currencyID)
 	if err != nil {
@@ -162,7 +195,7 @@ func (s *CurrencyPriceStore) pricesForCurrency(ctx context.Context, currencyID i
 
 	var prices []models.CurrencyPrice
 	for rows.Next() {
-		p, err := scanCurrencyPrice(rows)
+		p, err := scanCombinedCurrencyPrice(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan currency price: %w", err)
 		}
