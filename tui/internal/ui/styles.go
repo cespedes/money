@@ -71,11 +71,18 @@ func confirmDeletePrompt(kind string) string {
 // for a pop-up form (see createFieldWidth), highlighted if it's the
 // currently focused field.
 func columnHeader(label string, focused bool) string {
+	return columnHeaderWidth(label, focused, createFieldWidth)
+}
+
+// columnHeaderWidth is columnHeader with an explicit width, for the rare
+// field (e.g. the ledger entry form's Account column, see
+// ledgerAccountFieldWidth) whose column is wider than createFieldWidth.
+func columnHeaderWidth(label string, focused bool, width int) string {
 	style := formLabelStyle
 	if focused {
 		style = focusedFieldStyle
 	}
-	return style.Width(createFieldWidth).Render(label)
+	return style.Width(width).Render(label)
 }
 
 // stripPickerHeader drops a table.Model's own column header line from its

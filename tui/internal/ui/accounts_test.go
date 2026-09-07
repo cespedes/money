@@ -394,8 +394,7 @@ func TestAccountsModel_CreatePastesIntoFocusedField(t *testing.T) {
 // entry" pop-up.
 func TestAccountsModel_LedgerEntryPastesIntoFocusedField(t *testing.T) {
 	m := newTestLedgerModel(t, nil, nil)
-	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("tab")) // -> Description
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
 
 	m, _ = m.Update(tea.PasteMsg{Content: "Pasted description"})
 	if got := m.ledgerEntryInputs[fieldEntryDescription].Value(); got != "Pasted description" {
@@ -1135,8 +1134,8 @@ func TestAccountsModel_LedgerNKeyOpensFormWithDefaults(t *testing.T) {
 	if m.mode != accountsModeLedgerCreate {
 		t.Fatalf("mode = %v, want accountsModeLedgerCreate", m.mode)
 	}
-	if m.ledgerEntryFocus != focusEntryTimestamp {
-		t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+	if m.ledgerEntryFocus != focusEntryDescription {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryDescription", m.ledgerEntryFocus)
 	}
 	if got := m.ledgerEntryInputs[fieldEntryDescription].Value(); got != "" {
 		t.Errorf("Description = %q, want empty", got)
@@ -1340,10 +1339,11 @@ func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
 	m := newTestLedgerModel(t, nil, nil)
 	m, _ = m.Update(keyPress("n"))
 
+	// Description is focused by default (see startLedgerEntry).
 	order := []ledgerEntryFocus{
-		focusEntryTimestamp, focusEntryDescription, focusEntryAmount,
-		focusEntryCurrency, focusEntryOtherAccount, focusEntryOtherAmount,
-		focusEntryOtherCurrency, focusEntryTimestamp,
+		focusEntryDescription, focusEntryAmount, focusEntryCurrency,
+		focusEntryOtherAccount, focusEntryOtherAmount, focusEntryOtherCurrency,
+		focusEntryTimestamp, focusEntryDescription,
 	}
 	for i, want := range order[1:] {
 		m, _ = m.Update(keyPress("tab"))
@@ -1352,8 +1352,138 @@ func TestAccountsModel_LedgerEntryFocusCyclesWithTab(t *testing.T) {
 		}
 	}
 	m, _ = m.Update(keyPress("shift+tab"))
-	if m.ledgerEntryFocus != focusEntryOtherCurrency {
-		t.Fatalf("after shift+tab: ledgerEntryFocus = %v, want focusEntryOtherCurrency", m.ledgerEntryFocus)
+	if m.ledgerEntryFocus != focusEntryTimestamp {
+		t.Fatalf("after shift+tab: ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+	}
+}
+
+// TestAccountsModel_LedgerEntryBackwardIntoTimestampSelectsMinute is a
+// regression test for entering the Timestamp field from the end
+// (Shift+Tab, or Left from the very start of Description): it should
+// land on the last segment (Minute), not default to Year the way
+// Focus() would on its own — matching how Tab/Right (entering from the
+// start, after wrapping all the way around) still lands on Year.
+func TestAccountsModel_LedgerEntryBackwardIntoTimestampSelectsMinute(t *testing.T) {
+	t.Run("shift+tab", func(t *testing.T) {
+		m := newTestLedgerModel(t, nil, nil)
+		m, _ = m.Update(keyPress("n")) // Description is focused by default
+		m, _ = m.Update(keyPress("shift+tab"))
+		if m.ledgerEntryFocus != focusEntryTimestamp {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+		}
+		if m.ledgerEntryTimestamp.segment != timestampFieldMinute {
+			t.Fatalf("segment = %v, want timestampFieldMinute", m.ledgerEntryTimestamp.segment)
+		}
+	})
+
+	t.Run("left at the start of an empty Description", func(t *testing.T) {
+		m := newTestLedgerModel(t, nil, nil)
+		m, _ = m.Update(keyPress("n")) // Description is focused by default, empty, cursor at 0
+		m, _ = m.Update(keyPress("left"))
+		if m.ledgerEntryFocus != focusEntryTimestamp {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+		}
+		if m.ledgerEntryTimestamp.segment != timestampFieldMinute {
+			t.Fatalf("segment = %v, want timestampFieldMinute", m.ledgerEntryTimestamp.segment)
+		}
+	})
+
+	t.Run("tab all the way around still lands on Year", func(t *testing.T) {
+		m := newTestLedgerModel(t, nil, nil)
+		m, _ = m.Update(keyPress("n"))
+		for range numLedgerEntryFocusFields - 1 { // Description -> ... -> Timestamp
+			m, _ = m.Update(keyPress("tab"))
+		}
+		if m.ledgerEntryFocus != focusEntryTimestamp {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
+		}
+		if m.ledgerEntryTimestamp.segment != timestampFieldYear {
+			t.Fatalf("segment = %v, want timestampFieldYear", m.ledgerEntryTimestamp.segment)
+		}
+	})
+}
+
+// TestAccountsModel_LedgerEntryLeftRightWithinTextField checks that
+// left/right move the cursor within a text field's own content before
+// crossing into an adjacent field, and only cross once already at that
+// field's start/end.
+func TestAccountsModel_LedgerEntryLeftRightWithinTextField(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
+	m = typeString(m, "Refund")
+
+	// Cursor is at the end ("Refund", position 6): left moves within
+	// the field five times before reaching its start.
+	for range 5 {
+		m, _ = m.Update(keyPress("left"))
+		if m.ledgerEntryFocus != focusEntryDescription {
+			t.Fatalf("ledgerEntryFocus = %v, want focusEntryDescription (still moving within the field)", m.ledgerEntryFocus)
+		}
+	}
+	if got := m.ledgerEntryInputs[fieldEntryDescription].Position(); got != 1 {
+		t.Fatalf("cursor position = %d, want 1", got)
+	}
+
+	// One more left reaches position 0; a second crosses into Timestamp.
+	m, _ = m.Update(keyPress("left"))
+	if m.ledgerEntryFocus != focusEntryDescription {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryDescription (at position 0, not crossed yet)", m.ledgerEntryFocus)
+	}
+	m, _ = m.Update(keyPress("left"))
+	if m.ledgerEntryFocus != focusEntryTimestamp {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp (crossed from position 0)", m.ledgerEntryFocus)
+	}
+
+	// Right from Description's own end crosses forward into Amount, at
+	// its start.
+	m, _ = m.Update(keyPress("tab")) // back to Description
+	m.ledgerEntryInputs[fieldEntryDescription].CursorEnd()
+	m, _ = m.Update(keyPress("right"))
+	if m.ledgerEntryFocus != focusEntryAmount {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryAmount", m.ledgerEntryFocus)
+	}
+	if got := m.ledgerEntryInputs[fieldEntryAmount].Position(); got != 0 {
+		t.Fatalf("Amount cursor position = %d, want 0 (entered from the start)", got)
+	}
+}
+
+// TestAccountsModel_LedgerEntryLeftRightCrossIntoAndOutOfPickers checks
+// that a picker (no interior cursor position of its own) always crosses
+// on left/right, in both directions.
+func TestAccountsModel_LedgerEntryLeftRightCrossIntoAndOutOfPickers(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
+	for m.ledgerEntryFocus != focusEntryCurrency {
+		m, _ = m.Update(keyPress("tab"))
+	}
+
+	m, _ = m.Update(keyPress("right"))
+	if m.ledgerEntryFocus != focusEntryOtherAccount {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryOtherAccount", m.ledgerEntryFocus)
+	}
+	m, _ = m.Update(keyPress("left"))
+	if m.ledgerEntryFocus != focusEntryCurrency {
+		t.Fatalf("ledgerEntryFocus = %v, want focusEntryCurrency", m.ledgerEntryFocus)
+	}
+}
+
+// TestAccountsModel_LedgerEntryAccountColumnIsWider is a regression
+// test: the Other account field's column must be wide enough to show a
+// longer account name in full, unlike the other (createFieldWidth)
+// fields.
+func TestAccountsModel_LedgerEntryAccountColumnIsWider(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+	longName := "Long Enough To Exceed The Old Sixteen Column Width"
+	m.rows = []client.Account{{ID: 5, Name: "Cash"}, {ID: 6, Name: longName}}
+	m, _ = m.Update(keyPress("n"))
+
+	popup := m.ledgerEntryPopup()
+	want := longName[:ledgerAccountFieldWidth]
+	if !strings.Contains(popup, want) {
+		t.Errorf("popup should show the Other account name up to the wider column width, got:\n%s", popup)
+	}
+	if len(want) <= createFieldWidth {
+		t.Fatalf("test setup: want %q too short to prove anything past createFieldWidth", want)
 	}
 }
 
@@ -1419,8 +1549,7 @@ func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
 	t.Run("blank other amount with a different other currency", func(t *testing.T) {
 		eur := client.Currency{ID: 7, Name: "EUR", SymbolBefore: false, SymbolSpace: true, DecimalSeparator: ",", DecimalPlaces: 2}
 		m := newTestLedgerModel(t, nil, nil, testUSD, eur)
-		m, _ = m.Update(keyPress("n"))
-		m, _ = m.Update(keyPress("tab")) // -> Description
+		m, _ = m.Update(keyPress("n")) // Description is focused by default
 		m = typeString(m, "Refund")
 		m, _ = m.Update(keyPress("tab")) // -> Amount
 		m = typeString(m, "500")
@@ -1453,8 +1582,7 @@ func TestAccountsModel_LedgerEntrySubmitBalancesWhenOtherAmountBlank(t *testing.
 		json.NewEncoder(w).Encode(gotTransaction)
 	}, nil)
 
-	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("tab")) // -> Description
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
 	m = typeString(m, "Refund")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
 	m = typeString(m, "5")
@@ -1504,8 +1632,7 @@ func TestAccountsModel_LedgerEntrySubmitWithExplicitOtherAmount(t *testing.T) {
 		json.NewEncoder(w).Encode(gotTransaction)
 	}, nil)
 
-	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("tab")) // -> Description
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
 	m = typeString(m, "Split")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
 	m = typeString(m, "5")
@@ -1538,8 +1665,7 @@ func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
 		json.NewEncoder(w).Encode(gotTransaction)
 	}, nil, testUSD, eur)
 
-	m, _ = m.Update(keyPress("n"))
-	m, _ = m.Update(keyPress("tab")) // -> Description
+	m, _ = m.Update(keyPress("n")) // Description is focused by default
 	m = typeString(m, "Exchange")
 	m, _ = m.Update(keyPress("tab")) // -> Amount
 	m = typeString(m, "-10")

@@ -178,17 +178,33 @@ const ledgerPickerHeight = 7
 // meant for account-name lists (Parent, Other account).
 const ledgerCurrencyPickerWidth = createFieldWidth
 
+// ledgerAccountFieldWidth is the ledger entry form's own "Account"
+// column width (row 2's first field) — wider than the other fields'
+// createFieldWidth, since an account name commonly runs longer than a
+// currency name or the fixed-width timestamp.
+const ledgerAccountFieldWidth = 30
+
+// ledgerRow2CurrencyOffset is how many columns precede row 2's Currency
+// field. Unlike row 1 (whose four fields are all createFieldWidth wide,
+// so fieldPickerOffset's uniform-width formula applies), row 2's first
+// field (Account) is wider (see ledgerAccountFieldWidth), so this is
+// spelled out explicitly instead. (Inlined rather than computed by a
+// func: a const initializer can't call one.)
+const ledgerRow2CurrencyOffset = ledgerAccountFieldWidth + columnGap + createFieldWidth + columnGap
+
 // ledgerRow1PickerSlotWidth/ledgerRow2PickerSlotWidth are wide enough to
 // hold whichever picker(s) can appear in that row of the ledger entry
 // form — row 1 only ever shows its own Currency picker (the last of 4
 // columns); row 2 shows either Other account (parentPickerWidth, in the
-// first column, so no extra offset) or Currency (the last of 3 columns)
-// — so a blank filler reserving this footprint (see pickerSlot) never
-// has to shrink to make room for the picker that would go there.
-// (fieldPickerOffset inlined: a const initializer can't call a func.)
+// first column, so no extra offset) or Currency (at
+// ledgerRow2CurrencyOffset) — so a blank filler reserving this
+// footprint (see pickerSlot) never has to shrink to make room for the
+// picker that would go there. Row 2's is the wider of the two dropdowns'
+// own right edges (Currency's, since Account's own column being wider
+// than createFieldWidth no longer leaves the two coincidentally equal).
 const (
 	ledgerRow1PickerSlotWidth = 3*(createFieldWidth+columnGap) + ledgerCurrencyPickerWidth
-	ledgerRow2PickerSlotWidth = parentPickerWidth
+	ledgerRow2PickerSlotWidth = ledgerRow2CurrencyOffset + ledgerCurrencyPickerWidth
 )
 
 // pickerSlot reserves a constant ledgerPickerHeight x width footprint
@@ -676,7 +692,7 @@ func (m *accountsModel) startLedgerEntry() {
 	m.ledgerAccountPicker.SetRows(parentDropdownRows(m.ledgerOtherAccountOptions)[1:]) // drop the "(none)" row: not valid here
 	m.ledgerAccountPicker.SetCursor(0)
 
-	m.setLedgerEntryFocus(focusEntryTimestamp)
+	m.setLedgerEntryFocus(focusEntryDescription)
 	m.err = ""
 }
 
@@ -698,13 +714,111 @@ func (m *accountsModel) setLedgerEntryFocus(f ledgerEntryFocus) {
 	}
 }
 
+// crossLedgerEntryField moves focus to the ledger entry form's previous
+// (direction -1) or next (direction +1) field, wrapping around at
+// either end (matching Tab/Shift+Tab's existing cycle), and positions
+// the newly focused field at whichever end abuts the field being left:
+// its end when moving backward (so Shift+Tab and Left chain the same
+// way Tab and Right do), its start when moving forward. Landing on the
+// Timestamp field this way selects its last segment (Minute) when
+// arriving from the end — e.g. Shift+Tab or Left from the very start of
+// Description — rather than defaulting to Year, since Year is only the
+// natural landing spot when arriving from the start (moving forward
+// into it after wrapping all the way around).
+func (m *accountsModel) crossLedgerEntryField(direction int) {
+	n := int(numLedgerEntryFocusFields)
+	target := ledgerEntryFocus(((int(m.ledgerEntryFocus)+direction)%n + n) % n)
+	m.setLedgerEntryFocus(target)
+
+	atEnd := direction < 0
+	switch target {
+	case focusEntryTimestamp:
+		if atEnd {
+			m.ledgerEntryTimestamp.segment = timestampFieldMinute
+		}
+	case focusEntryDescription:
+		m.setLedgerTextCursor(fieldEntryDescription, atEnd)
+	case focusEntryAmount:
+		m.setLedgerTextCursor(fieldEntryAmount, atEnd)
+	case focusEntryOtherAmount:
+		m.setLedgerTextCursor(fieldEntryOtherAmount, atEnd)
+	}
+}
+
+// setLedgerTextCursor places ledgerEntryInputs[field]'s cursor at its
+// end (atEnd) or start, for crossLedgerEntryField landing on a text
+// field.
+func (m *accountsModel) setLedgerTextCursor(field int, atEnd bool) {
+	if atEnd {
+		m.ledgerEntryInputs[field].CursorEnd()
+	} else {
+		m.ledgerEntryInputs[field].CursorStart()
+	}
+}
+
+// ledgerEntryAtLeftBoundary/ledgerEntryAtRightBoundary report whether
+// the ledger entry form's currently focused field is at its own
+// start/end — the cursor's position 0 or the text's own length for a
+// text field, the first/last segment for the Timestamp field — meaning
+// Left/Right should cross into the previous/next field (see
+// crossLedgerEntryField) rather than move within the current one. A
+// picker (Currency, Other account) has no interior position of its
+// own, so it's always "at" both boundaries at once.
+func (m accountsModel) ledgerEntryAtLeftBoundary() bool {
+	switch m.ledgerEntryFocus {
+	case focusEntryTimestamp:
+		return m.ledgerEntryTimestamp.segment == timestampFieldYear
+	case focusEntryDescription:
+		return textinputAtStart(m.ledgerEntryInputs[fieldEntryDescription])
+	case focusEntryAmount:
+		return textinputAtStart(m.ledgerEntryInputs[fieldEntryAmount])
+	case focusEntryOtherAmount:
+		return textinputAtStart(m.ledgerEntryInputs[fieldEntryOtherAmount])
+	default: // a picker
+		return true
+	}
+}
+
+func (m accountsModel) ledgerEntryAtRightBoundary() bool {
+	switch m.ledgerEntryFocus {
+	case focusEntryTimestamp:
+		return m.ledgerEntryTimestamp.segment == timestampFieldMinute
+	case focusEntryDescription:
+		return textinputAtEnd(m.ledgerEntryInputs[fieldEntryDescription])
+	case focusEntryAmount:
+		return textinputAtEnd(m.ledgerEntryInputs[fieldEntryAmount])
+	case focusEntryOtherAmount:
+		return textinputAtEnd(m.ledgerEntryInputs[fieldEntryOtherAmount])
+	default: // a picker
+		return true
+	}
+}
+
+// textinputAtStart/textinputAtEnd report whether in's cursor sits at
+// the very start/end of its current text.
+func textinputAtStart(in textinput.Model) bool {
+	return in.Position() <= 0
+}
+
+func textinputAtEnd(in textinput.Model) bool {
+	return in.Position() >= len([]rune(in.Value()))
+}
+
 // updateLedgerCreate handles the ledger's "new entry" form: tab/shift+tab
-// are the only way to move between its seven fields (matching the
-// account form's own convention), enter submits from any of them, and
-// esc cancels back to the ledger view. msg is tea.Msg rather than
-// tea.KeyMsg specifically so a tea.PasteMsg (see App.Update) reaches
-// whichever field has focus below, the same as a typed tea.KeyMsg would
-// — the key-command switch above only matches when msg actually is one.
+// move between its seven fields (matching the account form's own
+// convention), enter submits from any of them, and esc cancels back to
+// the ledger view. Left/right chain across fields the same way: from a
+// text-like field (Description/Amount/Other amount, or a segment of the
+// Timestamp widget), left/right first moves within the field — to the
+// previous character, or the previous/next timestamp segment — and only
+// crosses into the previous/next field once already at that field's own
+// start/end (see ledgerEntryAtLeftBoundary/ledgerEntryAtRightBoundary);
+// a picker (Currency, Other account) has no such interior position, so
+// left/right on one always crosses immediately. msg is tea.Msg rather
+// than tea.KeyMsg specifically so a tea.PasteMsg (see App.Update)
+// reaches whichever field has focus below, the same as a typed
+// tea.KeyMsg would — the key-command switch above only matches when msg
+// actually is one.
 func (m accountsModel) updateLedgerCreate(msg tea.Msg) (accountsModel, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
@@ -715,11 +829,21 @@ func (m accountsModel) updateLedgerCreate(msg tea.Msg) (accountsModel, tea.Cmd) 
 		case "enter":
 			return m.submitLedgerEntry()
 		case "tab":
-			m.setLedgerEntryFocus((m.ledgerEntryFocus + 1) % numLedgerEntryFocusFields)
+			m.crossLedgerEntryField(1)
 			return m, nil
 		case "shift+tab":
-			m.setLedgerEntryFocus((m.ledgerEntryFocus + numLedgerEntryFocusFields - 1) % numLedgerEntryFocusFields)
+			m.crossLedgerEntryField(-1)
 			return m, nil
+		case "left":
+			if m.ledgerEntryAtLeftBoundary() {
+				m.crossLedgerEntryField(-1)
+				return m, nil
+			}
+		case "right":
+			if m.ledgerEntryAtRightBoundary() {
+				m.crossLedgerEntryField(1)
+				return m, nil
+			}
 		}
 	}
 
@@ -1413,10 +1537,10 @@ func (m accountsModel) ledgerEntryPopup() string {
 
 	row2Labels := []string{"Account", "Amount", "Currency"}
 	row2Focus := []ledgerEntryFocus{focusEntryOtherAccount, focusEntryOtherAmount, focusEntryOtherCurrency}
-	accountValue := padOrTruncate("", createFieldWidth)
+	accountValue := padOrTruncate("", ledgerAccountFieldWidth)
 	if m.ledgerEntryFocus != focusEntryOtherAccount {
 		if cursor := m.ledgerAccountPicker.Cursor(); cursor >= 0 && cursor < len(m.ledgerOtherAccountOptions) {
-			accountValue = padOrTruncate(m.ledgerOtherAccountOptions[cursor].account.Name, createFieldWidth)
+			accountValue = padOrTruncate(m.ledgerOtherAccountOptions[cursor].account.Name, ledgerAccountFieldWidth)
 		}
 	}
 	otherCurrencyValue := padOrTruncate("", createFieldWidth)
@@ -1437,7 +1561,11 @@ func (m accountsModel) ledgerEntryPopup() string {
 	}
 	headers2 := make([]string, len(row2Labels))
 	for i, l := range row2Labels {
-		headers2[i] = columnHeader(l, row2Focus[i] == m.ledgerEntryFocus)
+		width := createFieldWidth
+		if i == 0 { // Account
+			width = ledgerAccountFieldWidth
+		}
+		headers2[i] = columnHeaderWidth(l, row2Focus[i] == m.ledgerEntryFocus, width)
 	}
 
 	content := formLabelStyle.Render("New entry in "+m.ledgerAccount.Name) + "\n\n" +
@@ -1453,7 +1581,7 @@ func (m accountsModel) ledgerEntryPopup() string {
 	case focusEntryOtherAccount:
 		row2Picker = stripPickerHeader(m.ledgerAccountPicker.View())
 	case focusEntryOtherCurrency:
-		row2Picker = indentLines(stripPickerHeader(m.ledgerOtherCurrencyPicker.View()), fieldPickerOffset(2))
+		row2Picker = indentLines(stripPickerHeader(m.ledgerOtherCurrencyPicker.View()), ledgerRow2CurrencyOffset)
 	}
 	content += "\n" + pickerSlot(row2PickerShown, row2Picker, ledgerRow2PickerSlotWidth)
 	if m.err != "" {
