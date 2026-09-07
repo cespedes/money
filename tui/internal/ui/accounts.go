@@ -92,9 +92,14 @@ type accountsModel struct {
 	// view, distinct from the Transactions tab's own multi-entry creation
 	// wizard.
 	ledgerEntryFocus ledgerEntryFocus
-	// ledgerEntryInputs holds [timestamp, description, amount,
-	// otherAmount] (see fieldEntryTimestamp etc.) — both Currency fields
-	// and Other account are pickers instead, not plain text fields.
+	// ledgerEntryTimestamp is the first row's Timestamp field — a
+	// segmented year/month/day/hour/minute widget (see timestampField)
+	// rather than a plain text field, so it's never in an invalid state
+	// to validate at submit time.
+	ledgerEntryTimestamp timestampField
+	// ledgerEntryInputs holds [description, amount, otherAmount] (see
+	// fieldEntryDescription etc.) — both Currency fields and Other
+	// account are pickers instead, not plain text fields.
 	ledgerEntryInputs         []textinput.Model
 	ledgerCurrencyPicker      table.Model // this account's currency (row 1)
 	ledgerOtherCurrencyPicker table.Model // the other entry's currency (row 2)
@@ -130,8 +135,7 @@ const (
 
 // Indices into ledgerEntryInputs (see accountsModel).
 const (
-	fieldEntryTimestamp = iota
-	fieldEntryDescription
+	fieldEntryDescription = iota
 	fieldEntryAmount
 	fieldEntryOtherAmount
 )
@@ -242,9 +246,6 @@ func newAccountsModel(c *client.Client) accountsModel {
 		table.WithWidth(parentPickerWidth),
 	)
 
-	entryTimestamp := textinput.New()
-	entryTimestamp.Prompt = ""
-	entryTimestamp.SetWidth(createFieldWidth)
 	entryDesc := textinput.New()
 	entryDesc.Placeholder = "required"
 	entryDesc.Prompt = ""
@@ -284,7 +285,7 @@ func newAccountsModel(c *client.Client) accountsModel {
 		ledgerTable:  ledgerTable,
 		parentPicker: parentPicker,
 		ledgerEntryInputs: []textinput.Model{
-			entryTimestamp, entryDesc, entryAmount, entryOtherAmount,
+			entryDesc, entryAmount, entryOtherAmount,
 		},
 		ledgerCurrencyPicker:      ledgerCurrencyPicker,
 		ledgerOtherCurrencyPicker: ledgerOtherCurrencyPicker,
@@ -660,7 +661,7 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 // open and one other, picked from the rest.
 func (m *accountsModel) startLedgerEntry() {
 	m.mode = accountsModeLedgerCreate
-	m.ledgerEntryInputs[fieldEntryTimestamp].SetValue(time.Now().Format(timestampLayout))
+	m.ledgerEntryTimestamp = newTimestampField(time.Now())
 	m.ledgerEntryInputs[fieldEntryDescription].SetValue("")
 	m.ledgerEntryInputs[fieldEntryAmount].SetValue("")
 	m.ledgerEntryInputs[fieldEntryOtherAmount].SetValue("")
@@ -684,9 +685,10 @@ func (m *accountsModel) setLedgerEntryFocus(f ledgerEntryFocus) {
 	for i := range m.ledgerEntryInputs {
 		m.ledgerEntryInputs[i].Blur()
 	}
+	m.ledgerEntryTimestamp.Blur()
 	switch f {
 	case focusEntryTimestamp:
-		m.ledgerEntryInputs[fieldEntryTimestamp].Focus()
+		m.ledgerEntryTimestamp.Focus()
 	case focusEntryDescription:
 		m.ledgerEntryInputs[fieldEntryDescription].Focus()
 	case focusEntryAmount:
@@ -723,9 +725,8 @@ func (m accountsModel) updateLedgerCreate(msg tea.Msg) (accountsModel, tea.Cmd) 
 
 	switch m.ledgerEntryFocus {
 	case focusEntryTimestamp:
-		var cmd tea.Cmd
-		m.ledgerEntryInputs[fieldEntryTimestamp], cmd = m.ledgerEntryInputs[fieldEntryTimestamp].Update(msg)
-		return m, cmd
+		m.ledgerEntryTimestamp = m.ledgerEntryTimestamp.Update(msg)
+		return m, nil
 	case focusEntryDescription:
 		var cmd tea.Cmd
 		m.ledgerEntryInputs[fieldEntryDescription], cmd = m.ledgerEntryInputs[fieldEntryDescription].Update(msg)
@@ -774,12 +775,7 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 		m.setLedgerEntryFocus(focusEntryDescription)
 		return m, nil
 	}
-	ts, err := time.ParseInLocation(timestampLayout, strings.TrimSpace(m.ledgerEntryInputs[fieldEntryTimestamp].Value()), time.Local)
-	if err != nil {
-		m.err = "timestamp must look like " + timestampLayout
-		m.setLedgerEntryFocus(focusEntryTimestamp)
-		return m, nil
-	}
+	ts := m.ledgerEntryTimestamp.Value()
 	currency, ok := currencyAt(m.ledgerCurrencyPicker.Cursor(), m.currencyList)
 	if !ok {
 		m.err = "pick a currency"
@@ -1409,7 +1405,7 @@ func (m accountsModel) ledgerEntryPopup() string {
 		}
 	}
 	row1Values := []string{
-		m.ledgerEntryInputs[fieldEntryTimestamp].View(),
+		m.ledgerEntryTimestamp.View(),
 		m.ledgerEntryInputs[fieldEntryDescription].View(),
 		m.ledgerEntryInputs[fieldEntryAmount].View(),
 		currencyValue,

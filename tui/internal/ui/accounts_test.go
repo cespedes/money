@@ -1144,10 +1144,7 @@ func TestAccountsModel_LedgerNKeyOpensFormWithDefaults(t *testing.T) {
 	if got := m.ledgerEntryInputs[fieldEntryAmount].Value(); got != "" {
 		t.Errorf("Amount = %q, want empty", got)
 	}
-	ts, err := time.ParseInLocation(timestampLayout, m.ledgerEntryInputs[fieldEntryTimestamp].Value(), time.Local)
-	if err != nil {
-		t.Fatalf("Timestamp = %q, want a value matching %s: %v", m.ledgerEntryInputs[fieldEntryTimestamp].Value(), timestampLayout, err)
-	}
+	ts := m.ledgerEntryTimestamp.Value()
 	if diff := time.Since(ts); diff < 0 || diff > time.Minute {
 		t.Errorf("Timestamp = %v, want close to now", ts)
 	}
@@ -1388,19 +1385,6 @@ func TestAccountsModel_LedgerEntryValidation(t *testing.T) {
 		}
 		if m.ledgerEntryFocus != focusEntryDescription {
 			t.Fatalf("ledgerEntryFocus = %v, want focusEntryDescription", m.ledgerEntryFocus)
-		}
-	})
-
-	t.Run("bad timestamp", func(t *testing.T) {
-		m := setupToField(t, focusEntryDescription)
-		m = typeString(m, "Refund")
-		m.ledgerEntryInputs[fieldEntryTimestamp].SetValue("not a timestamp")
-		m, _ = m.Update(keyPress("enter"))
-		if m.err == "" {
-			t.Fatal("expected a timestamp error")
-		}
-		if m.ledgerEntryFocus != focusEntryTimestamp {
-			t.Fatalf("ledgerEntryFocus = %v, want focusEntryTimestamp", m.ledgerEntryFocus)
 		}
 	})
 
