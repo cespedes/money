@@ -110,6 +110,12 @@ type accountsModel struct {
 	// map its cursor back to an account ID.
 	ledgerOtherAccountOptions []accountTreeNode
 	ledgerAccountPicker       table.Model
+	// editingTransactionID is the transaction being edited's ID, or nil
+	// while creating a new one (see startLedgerEntry/startLedgerEntryEdit)
+	// — the same pop-up is reused for both, and submitLedgerEntry
+	// branches on this to PUT or POST, mirroring editingID's role in the
+	// account form.
+	editingTransactionID *int64
 
 	// windowHeight is the last content height passed to SetSize, kept so
 	// the parent dropdown can be resized again when the account list
@@ -441,6 +447,15 @@ type ledgerEntryMutatedMsg struct {
 	err error
 }
 
+// transactionLoadedForEditMsg carries the full transaction fetched for
+// "e" inside the ledger view (see startLedgerEntryEdit) — the ledger's
+// own entries (client.LedgerEntry) don't carry the other side's account
+// or currency, so editing needs the transaction itself.
+type transactionLoadedForEditMsg struct {
+	transaction client.Transaction
+	err         error
+}
+
 func (m accountsModel) loadAccounts() tea.Msg {
 	accounts, err := m.client.ListAccounts(context.Background())
 	return accountsLoadedMsg{accounts: accounts, err: err}
@@ -456,6 +471,14 @@ func (m accountsModel) loadLedger(accountID int64) tea.Cmd {
 	return func() tea.Msg {
 		entries, err := c.GetAccountLedger(context.Background(), accountID)
 		return ledgerLoadedMsg{entries: entries, err: err}
+	}
+}
+
+func (m accountsModel) loadTransactionForEdit(id int64) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		t, err := c.GetTransaction(context.Background(), id)
+		return transactionLoadedForEditMsg{transaction: t, err: err}
 	}
 }
 
@@ -535,7 +558,19 @@ func (m accountsModel) Update(msg tea.Msg) (accountsModel, tea.Cmd) {
 		}
 		m.err = ""
 		m.mode = accountsModeLedger
+		m.editingTransactionID = nil
 		return m, m.loadLedger(m.ledgerAccount.ID)
+
+	case transactionLoadedForEditMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		if err := m.startLedgerEntryEdit(msg.transaction); err != nil {
+			m.err = err.Error()
+			return m, nil
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		switch m.mode {
@@ -663,6 +698,13 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 		}
 		m.startLedgerEntry()
 		return m, nil
+	case "e":
+		row := m.ledgerTable.Cursor()
+		if row < 0 || row >= len(m.ledgerEntries) {
+			return m, nil
+		}
+		m.err = ""
+		return m, m.loadTransactionForEdit(m.ledgerEntries[row].TransactionID)
 	}
 	var cmd tea.Cmd
 	m.ledgerTable, cmd = m.ledgerTable.Update(msg)
@@ -677,6 +719,7 @@ func (m accountsModel) updateLedger(msg tea.KeyMsg) (accountsModel, tea.Cmd) {
 // open and one other, picked from the rest.
 func (m *accountsModel) startLedgerEntry() {
 	m.mode = accountsModeLedgerCreate
+	m.editingTransactionID = nil
 	m.ledgerEntryTimestamp = newTimestampField(time.Now())
 	m.ledgerEntryInputs[fieldEntryDescription].SetValue("")
 	m.ledgerEntryInputs[fieldEntryAmount].SetValue("")
@@ -694,6 +737,84 @@ func (m *accountsModel) startLedgerEntry() {
 
 	m.setLedgerEntryFocus(focusEntryDescription)
 	m.err = ""
+}
+
+// splitLedgerEditableTransaction splits t's entries into this account's
+// own (mine) and the other side's (other) — the shape the ledger's "new
+// entry" form can represent: exactly two entries, on two different
+// accounts, one of them accountID. It returns an error instead — the
+// ledger view has no way to show this transaction as this form's two
+// rows — if t has any other shape (e.g. more than two entries, or both
+// on the same account), which can only happen for a transaction created
+// via the Transactions tab's own wizard (the ledger's own form never
+// produces one).
+func splitLedgerEditableTransaction(t client.Transaction, accountID int64) (mine, other client.Entry, err error) {
+	if len(t.Entries) != 2 {
+		return client.Entry{}, client.Entry{}, fmt.Errorf("can only edit a transaction with exactly two entries here")
+	}
+	e0, e1 := t.Entries[0], t.Entries[1]
+	if e0.AccountID == e1.AccountID {
+		return client.Entry{}, client.Entry{}, fmt.Errorf("can't edit a transaction whose two entries share the same account here")
+	}
+	switch accountID {
+	case e0.AccountID:
+		return e0, e1, nil
+	case e1.AccountID:
+		return e1, e0, nil
+	default:
+		return client.Entry{}, client.Entry{}, fmt.Errorf("transaction does not include this account")
+	}
+}
+
+// startLedgerEntryEdit opens the same pop-up as startLedgerEntry (see
+// ledgerEntryPopup), pre-filled from an existing transaction's two
+// entries (see splitLedgerEditableTransaction), for submitLedgerEntry to
+// PUT back instead of POSTing a new transaction. Returns an error,
+// leaving the ledger view unchanged, if t can't be represented by this
+// form.
+func (m *accountsModel) startLedgerEntryEdit(t client.Transaction) error {
+	mine, other, err := splitLedgerEditableTransaction(t, m.ledgerAccount.ID)
+	if err != nil {
+		return err
+	}
+
+	mineCurrency, ok := m.currencies[mine.CurrencyID]
+	if !ok {
+		return fmt.Errorf("unknown currency for this account's entry")
+	}
+	mineMinor, err := mineCurrency.ToMinorUnits(mine.Amount)
+	if err != nil {
+		return err
+	}
+	otherCurrency, ok := m.currencies[other.CurrencyID]
+	if !ok {
+		return fmt.Errorf("unknown currency for the other entry")
+	}
+	otherMinor, err := otherCurrency.ToMinorUnits(other.Amount)
+	if err != nil {
+		return err
+	}
+
+	m.mode = accountsModeLedgerCreate
+	id := t.ID
+	m.editingTransactionID = &id
+	m.ledgerEntryTimestamp = newTimestampField(t.Timestamp.Local())
+	m.ledgerEntryInputs[fieldEntryDescription].SetValue(t.Description)
+	m.ledgerEntryInputs[fieldEntryAmount].SetValue(mineCurrency.FormatAmount(mineMinor))
+	m.ledgerEntryInputs[fieldEntryOtherAmount].SetValue(otherCurrency.FormatAmount(otherMinor))
+
+	m.ledgerCurrencyPicker.SetRows(currencyPickerRows(m.currencyList))
+	m.ledgerCurrencyPicker.SetCursor(currencyCursorFor(mine.CurrencyID, m.currencyList))
+	m.ledgerOtherCurrencyPicker.SetRows(currencyPickerRows(m.currencyList))
+	m.ledgerOtherCurrencyPicker.SetCursor(currencyCursorFor(other.CurrencyID, m.currencyList))
+
+	m.ledgerOtherAccountOptions = orderAccountsAsTree(accountsOtherThan(m.rows, m.ledgerAccount.ID))
+	m.ledgerAccountPicker.SetRows(parentDropdownRows(m.ledgerOtherAccountOptions)[1:]) // drop the "(none)" row: not valid here
+	m.ledgerAccountPicker.SetCursor(accountCursorFor(other.AccountID, m.ledgerOtherAccountOptions))
+
+	m.setLedgerEntryFocus(focusEntryDescription)
+	m.err = ""
+	return nil
 }
 
 func (m *accountsModel) setLedgerEntryFocus(f ledgerEntryFocus) {
@@ -824,6 +945,7 @@ func (m accountsModel) updateLedgerCreate(msg tea.Msg) (accountsModel, tea.Cmd) 
 		switch key.String() {
 		case "esc":
 			m.mode = accountsModeLedger
+			m.editingTransactionID = nil
 			m.err = ""
 			return m, nil
 		case "enter":
@@ -953,6 +1075,13 @@ func (m accountsModel) submitLedgerEntry() (accountsModel, tea.Cmd) {
 
 	m.err = ""
 	c := m.client
+	if m.editingTransactionID != nil {
+		id := *m.editingTransactionID
+		return m, func() tea.Msg {
+			_, err := c.UpdateTransaction(context.Background(), id, transaction)
+			return ledgerEntryMutatedMsg{err: err}
+		}
+	}
 	return m, func() tea.Msg {
 		_, err := c.CreateTransaction(context.Background(), transaction)
 		return ledgerEntryMutatedMsg{err: err}
@@ -1150,6 +1279,20 @@ func selectedAccountID(cursor int, options []accountTreeNode) (id int64, ok bool
 		return 0, false
 	}
 	return options[cursor].account.ID, true
+}
+
+// accountCursorFor is selectedAccountID's inverse, used to preselect the
+// other side's current account when opening a transaction for editing
+// (see startLedgerEntryEdit). Falls back to 0 if id isn't found in
+// options, which shouldn't happen: an account referenced by an existing
+// entry can't have been deleted (accounts.Delete is ON DELETE RESTRICT).
+func accountCursorFor(id int64, options []accountTreeNode) int {
+	for i, n := range options {
+		if n.account.ID == id {
+			return i
+		}
+	}
+	return 0
 }
 
 // lastUsedCurrencyID is entries' most recent CurrencyID (entries is
@@ -1568,7 +1711,11 @@ func (m accountsModel) ledgerEntryPopup() string {
 		headers2[i] = columnHeaderWidth(l, row2Focus[i] == m.ledgerEntryFocus, width)
 	}
 
-	content := formLabelStyle.Render("New entry in "+m.ledgerAccount.Name) + "\n\n" +
+	title := "New entry in " + m.ledgerAccount.Name
+	if m.editingTransactionID != nil {
+		title = "Edit entry in " + m.ledgerAccount.Name
+	}
+	content := formLabelStyle.Render(title) + "\n\n" +
 		strings.Join(headers1, "  ") + "\n" +
 		strings.Join(row1Values, "  ")
 	content += "\n" + pickerSlot(m.ledgerEntryFocus == focusEntryCurrency,

@@ -173,6 +173,62 @@ func (s *TransactionStore) Create(ctx context.Context, t models.Transaction) (mo
 	return t, nil
 }
 
+// Update replaces a transaction's timestamp, description and entries
+// atomically: the old entries are deleted and the new ones inserted in
+// their place within the same database transaction, so
+// check_transaction_balance's deferred constraint trigger only
+// re-validates the final, fully-replaced set of entries — never the
+// transiently-empty state in between. It rejects entries that don't
+// balance (see entriesBalance) before touching the database, the same
+// as Create.
+func (s *TransactionStore) Update(ctx context.Context, t models.Transaction) (models.Transaction, error) {
+	if !entriesBalance(t.Entries) {
+		return models.Transaction{}, ErrUnbalanced
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return models.Transaction{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE transactions SET "timestamp" = $1, description = $2 WHERE id = $3`,
+		t.Timestamp, t.Description, t.ID)
+	if err != nil {
+		return models.Transaction{}, fmt.Errorf("update transaction: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return models.Transaction{}, ErrNotFound
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM transaction_entries WHERE transaction_id = $1`, t.ID); err != nil {
+		return models.Transaction{}, fmt.Errorf("delete entries: %w", err)
+	}
+
+	batch := &pgx.Batch{}
+	for _, e := range t.Entries {
+		batch.Queue(
+			`INSERT INTO transaction_entries (transaction_id, account_id, amount, currency_id) VALUES ($1, $2, $3, $4)`,
+			t.ID, e.AccountID, e.Amount, e.CurrencyID)
+	}
+	br := tx.SendBatch(ctx, batch)
+	for range t.Entries {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
+			return models.Transaction{}, fmt.Errorf("insert entry: %w", err)
+		}
+	}
+	if err := br.Close(); err != nil {
+		return models.Transaction{}, fmt.Errorf("close batch: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return models.Transaction{}, fmt.Errorf("commit tx: %w", err)
+	}
+	return t, nil
+}
+
 func (s *TransactionStore) Delete(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM transactions WHERE id = $1`, id)
 	if err != nil {

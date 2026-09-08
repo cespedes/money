@@ -68,6 +68,98 @@ func TestTransactionsCRUD(t *testing.T) {
 	}
 }
 
+func TestUpdateTransaction(t *testing.T) {
+	h := newTestHandler(t)
+	cash, revenue := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD")
+
+	var created transactionDTO
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC),
+		Description: "Invoice #1",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
+		},
+	}, &created)
+
+	newTs := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+	var updated transactionDTO
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/transactions/%d", created.ID), transactionDTO{
+		Timestamp:   newTs,
+		Description: "Invoice #1 (corrected)",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 15, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -15, CurrencyID: usd.ID},
+		},
+	}, &updated)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if updated.Description != "Invoice #1 (corrected)" || !updated.Timestamp.Equal(newTs) {
+		t.Fatalf("update: got %+v", updated)
+	}
+	if len(updated.Entries) != 2 || updated.Entries[0].Amount != 15 || updated.Entries[1].Amount != -15 {
+		t.Fatalf("update: entries = %+v, want 15/-15", updated.Entries)
+	}
+
+	var got transactionDTO
+	do(t, h, http.MethodGet, fmt.Sprintf("/transactions/%d", created.ID), nil, &got)
+	if got.Description != "Invoice #1 (corrected)" || len(got.Entries) != 2 || got.Entries[0].Amount != 15 {
+		t.Fatalf("get after update: got %+v", got)
+	}
+}
+
+func TestUpdateTransaction_RejectsUnbalanced(t *testing.T) {
+	h := newTestHandler(t)
+	cash, revenue := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD")
+
+	var created transactionDTO
+	do(t, h, http.MethodPost, "/transactions", transactionDTO{
+		Timestamp:   time.Now(),
+		Description: "Invoice #1",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
+		},
+	}, &created)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodPut, fmt.Sprintf("/transactions/%d", created.ID), transactionDTO{
+		Timestamp:   created.Timestamp,
+		Description: created.Description,
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -9, CurrencyID: usd.ID},
+		},
+	}, &body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("update: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if body["error"] != "entry amounts must sum to zero within each currency" {
+		t.Fatalf("update: body = %v", body)
+	}
+}
+
+func TestUpdateTransaction_NotFound(t *testing.T) {
+	h := newTestHandler(t)
+	cash, revenue := createTwoAccountsHTTP(t, h)
+	usd := createTestCurrency(t, h, "USD")
+
+	rec := do(t, h, http.MethodPut, "/transactions/999999", transactionDTO{
+		Timestamp:   time.Now(),
+		Description: "Does not exist",
+		Entries: []entryDTO{
+			{AccountID: cash.ID, Amount: 10, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -10, CurrencyID: usd.ID},
+		},
+	}, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("update: status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 // TestCreateTransaction_CurrencyExchange proves a transaction touching
 // exactly two currencies, with a nonzero net of opposite sign in each,
 // is accepted as an implicit currency exchange rather than rejected as

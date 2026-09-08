@@ -167,6 +167,7 @@ All endpoints accept and return JSON.
 | GET    | `/transactions`     | List transactions (with their entries)    |
 | POST   | `/transactions`     | Create a transaction (entries must sum to zero per currency, or be a two-currency exchange — see above) |
 | GET    | `/transactions/{id}`| Get a transaction (with its entries)      |
+| PUT    | `/transactions/{id}`| Replace a transaction's timestamp, description and entries (same balance rules as creating one) |
 | DELETE | `/transactions/{id}`| Delete a transaction                      |
 | GET    | `/currencies`       | List currencies                           |
 | POST   | `/currencies`       | Create a currency                         |

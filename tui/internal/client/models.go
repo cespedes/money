@@ -58,6 +58,25 @@ type Currency struct {
 // unit) as a decimal string with this currency's name attached, per its
 // own display configuration.
 func (c Currency) Format(amount int64) string {
+	number := c.FormatAmount(amount)
+	space := ""
+	if c.SymbolSpace {
+		space = " "
+	}
+	if c.SymbolBefore {
+		return c.Name + space + number
+	}
+	return number + space + c.Name
+}
+
+// FormatAmount renders amount (an integer number of this currency's
+// minor unit) as a plain decimal number using this currency's own
+// ThousandsSeparator/DecimalSeparator conventions — no currency
+// name/symbol attached (see Format for that). It's ParseAmount's
+// inverse, so it's what a text field should be pre-filled with when it
+// already holds an exact int64 amount a person may go on to edit
+// further (e.g. accounts.go's startLedgerEntryEdit).
+func (c Currency) FormatAmount(amount int64) string {
 	sign := ""
 	if amount < 0 {
 		sign = "-"
@@ -79,15 +98,7 @@ func (c Currency) Format(amount int64) string {
 		frac = strings.Repeat("0", c.DecimalPlaces-len(frac)) + frac
 		number += c.DecimalSeparator + frac
 	}
-
-	space := ""
-	if c.SymbolSpace {
-		space = " "
-	}
-	if c.SymbolBefore {
-		return c.Name + space + number
-	}
-	return number + space + c.Name
+	return number
 }
 
 // ParseAmount parses s — a real-world quantity of this currency typed by

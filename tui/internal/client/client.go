@@ -140,6 +140,12 @@ func (c *Client) CreateTransaction(ctx context.Context, t Transaction) (Transact
 	return created, err
 }
 
+func (c *Client) UpdateTransaction(ctx context.Context, id int64, t Transaction) (Transaction, error) {
+	var updated Transaction
+	err := c.do(ctx, http.MethodPut, "/transactions/"+strconv.FormatInt(id, 10), t, &updated)
+	return updated, err
+}
+
 func (c *Client) DeleteTransaction(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, "/transactions/"+strconv.FormatInt(id, 10), nil, nil)
 }

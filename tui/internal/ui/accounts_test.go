@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1095,6 +1096,7 @@ func newTestLedgerModel(t *testing.T, handler http.HandlerFunc, ledgerEntries []
 	m.rows = []client.Account{{ID: 5, Name: "Cash"}, {ID: 6, Name: "Revenue"}}
 	m.table.SetRows(accountsToRows(m.rows, m.currencies))
 	m.currencyList = currencies
+	m.currencies = indexCurrencies(currencies)
 	m.mode = accountsModeLedger
 	m.ledgerAccount = m.rows[0]
 	m.ledgerEntries = ledgerEntries
@@ -1688,6 +1690,191 @@ func TestAccountsModel_LedgerEntrySubmitWithDifferentCurrencies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotTransaction.Entries, want) {
 		t.Fatalf("Entries = %+v, want %+v (each entry keeping its own row's currency)", gotTransaction.Entries, want)
+	}
+}
+
+func TestAccountsModel_LedgerEKeyRequiresRows(t *testing.T) {
+	m := newTestLedgerModel(t, nil, nil)
+
+	m, cmd := m.Update(keyPress("e"))
+	if cmd != nil {
+		t.Fatal("e with no ledger entries should be a no-op")
+	}
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+}
+
+// ledgerEditTransactionHandler returns an http.HandlerFunc serving
+// GET/PUT /transactions/{id} for txn, recording the body of any PUT into
+// *gotUpdate — the shape TestAccountsModel_LedgerEKey* tests need to
+// drive "e" through a full load-then-submit round trip.
+func ledgerEditTransactionHandler(txn client.Transaction, gotUpdate *client.Transaction) http.HandlerFunc {
+	path := fmt.Sprintf("/transactions/%d", txn.ID)
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == path:
+			json.NewEncoder(w).Encode(txn)
+		case r.Method == http.MethodPut && r.URL.Path == path:
+			var body client.Transaction
+			json.NewDecoder(r.Body).Decode(&body)
+			body.ID = txn.ID
+			if gotUpdate != nil {
+				*gotUpdate = body
+			}
+			json.NewEncoder(w).Encode(body)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+}
+
+// runLedgerEdit presses "e" and drives the resulting command (fetching
+// the transaction) back through Update, landing on the pre-filled edit
+// form — the two-step dance every test below needs before it can make
+// assertions on the populated form.
+func runLedgerEdit(t *testing.T, m accountsModel) accountsModel {
+	t.Helper()
+	m, cmd := m.Update(keyPress("e"))
+	if cmd == nil {
+		t.Fatal("expected a command to load the transaction for editing")
+	}
+	m, _ = m.Update(cmd())
+	return m
+}
+
+// TestAccountsModel_LedgerEKeyPrefillsForm checks that "e" on a ledger
+// row opens the same pop-up as "n" (see ledgerEntryPopup), pre-filled
+// from the underlying transaction's two entries: this account's own
+// amount/currency on row 1, the other account/amount/currency on row 2.
+func TestAccountsModel_LedgerEKeyPrefillsForm(t *testing.T) {
+	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	txn := client.Transaction{
+		ID:          42,
+		Timestamp:   ts,
+		Description: "Invoice #1",
+		Entries: []client.Entry{
+			{AccountID: 5, Amount: "10.00", CurrencyID: testUSD.ID},  // Cash: this account
+			{AccountID: 6, Amount: "-10.00", CurrencyID: testUSD.ID}, // Revenue: the other side
+		},
+	}
+	m := newTestLedgerModel(t, ledgerEditTransactionHandler(txn, nil),
+		[]client.LedgerEntry{{TransactionID: 42, CurrencyID: testUSD.ID, Amount: "10.00", Balance: "10.00"}})
+
+	m = runLedgerEdit(t, m)
+
+	if m.mode != accountsModeLedgerCreate {
+		t.Fatalf("mode = %v, want accountsModeLedgerCreate", m.mode)
+	}
+	if m.editingTransactionID == nil || *m.editingTransactionID != 42 {
+		t.Fatalf("editingTransactionID = %v, want 42", m.editingTransactionID)
+	}
+	if got := m.ledgerEntryInputs[fieldEntryDescription].Value(); got != "Invoice #1" {
+		t.Errorf("Description = %q, want %q", got, "Invoice #1")
+	}
+	if got := m.ledgerEntryInputs[fieldEntryAmount].Value(); got != "10.00" {
+		t.Errorf("Amount = %q, want %q", got, "10.00")
+	}
+	if got := m.ledgerEntryInputs[fieldEntryOtherAmount].Value(); got != "-10.00" {
+		t.Errorf("Other amount = %q, want %q", got, "-10.00")
+	}
+	if got := m.ledgerEntryTimestamp.Value(); !got.Equal(ts) {
+		t.Errorf("Timestamp = %v, want %v", got, ts)
+	}
+	if got, ok := currencyAt(m.ledgerCurrencyPicker.Cursor(), m.currencyList); !ok || got.ID != testUSD.ID {
+		t.Errorf("currency = %+v (ok=%v), want USD", got, ok)
+	}
+	if got, ok := currencyAt(m.ledgerOtherCurrencyPicker.Cursor(), m.currencyList); !ok || got.ID != testUSD.ID {
+		t.Errorf("other currency = %+v (ok=%v), want USD", got, ok)
+	}
+	if got, ok := selectedAccountID(m.ledgerAccountPicker.Cursor(), m.ledgerOtherAccountOptions); !ok || got != 6 {
+		t.Errorf("other account = %d (ok=%v), want 6 (Revenue)", got, ok)
+	}
+
+	popup := m.ledgerEntryPopup()
+	if !strings.Contains(popup, "Edit entry in Cash") {
+		t.Errorf("popup should be titled %q, got:\n%s", "Edit entry in Cash", popup)
+	}
+}
+
+// TestAccountsModel_LedgerEKeyRejectsMoreThanTwoEntries checks that
+// editing a transaction the compact form can't represent — one with
+// more than two entries, only possible via the Transactions tab's own
+// wizard — leaves the ledger view in place with an explanatory error,
+// rather than opening a form that would silently drop an entry.
+func TestAccountsModel_LedgerEKeyRejectsMoreThanTwoEntries(t *testing.T) {
+	txn := client.Transaction{
+		ID:          42,
+		Timestamp:   time.Now(),
+		Description: "Split three ways",
+		Entries: []client.Entry{
+			{AccountID: 5, Amount: "10.00", CurrencyID: testUSD.ID},
+			{AccountID: 6, Amount: "-5.00", CurrencyID: testUSD.ID},
+			{AccountID: 6, Amount: "-5.00", CurrencyID: testUSD.ID},
+		},
+	}
+	m := newTestLedgerModel(t, ledgerEditTransactionHandler(txn, nil),
+		[]client.LedgerEntry{{TransactionID: 42, CurrencyID: testUSD.ID, Amount: "10.00", Balance: "10.00"}})
+
+	m = runLedgerEdit(t, m)
+
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger (editing should have been refused)", m.mode)
+	}
+	if m.err == "" {
+		t.Fatal("expected an error explaining why this transaction can't be edited here")
+	}
+}
+
+// TestAccountsModel_LedgerEKeySubmitsUpdate drives a full edit round
+// trip: load the transaction, change its amount, submit, and check the
+// PUT body and that the form's editingTransactionID is cleared
+// afterward (so a later "n" doesn't PUT over it by mistake).
+func TestAccountsModel_LedgerEKeySubmitsUpdate(t *testing.T) {
+	ts := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	txn := client.Transaction{
+		ID:          42,
+		Timestamp:   ts,
+		Description: "Invoice #1",
+		Entries: []client.Entry{
+			{AccountID: 5, Amount: "10.00", CurrencyID: testUSD.ID},
+			{AccountID: 6, Amount: "-10.00", CurrencyID: testUSD.ID},
+		},
+	}
+	var gotUpdate client.Transaction
+	m := newTestLedgerModel(t, ledgerEditTransactionHandler(txn, &gotUpdate),
+		[]client.LedgerEntry{{TransactionID: 42, CurrencyID: testUSD.ID, Amount: "10.00", Balance: "10.00"}})
+
+	m = runLedgerEdit(t, m)
+	m.ledgerEntryInputs[fieldEntryAmount].SetValue("15")
+
+	m, cmd := m.Update(keyPress("enter"))
+	if cmd == nil {
+		t.Fatal("expected a command to submit the update")
+	}
+	msg := cmd()
+	mutated, ok := msg.(ledgerEntryMutatedMsg)
+	if !ok || mutated.err != nil {
+		t.Fatalf("got %#v", msg)
+	}
+
+	if gotUpdate.Description != "Invoice #1" {
+		t.Fatalf("PUT description = %q, want %q", gotUpdate.Description, "Invoice #1")
+	}
+	want := []client.Entry{
+		{AccountID: 5, Amount: "15.00", CurrencyID: testUSD.ID},
+		{AccountID: 6, Amount: "-10.00", CurrencyID: testUSD.ID},
+	}
+	if !reflect.DeepEqual(gotUpdate.Entries, want) {
+		t.Fatalf("PUT entries = %+v, want %+v", gotUpdate.Entries, want)
+	}
+
+	m, _ = m.Update(mutated)
+	if m.mode != accountsModeLedger {
+		t.Fatalf("mode = %v, want accountsModeLedger", m.mode)
+	}
+	if m.editingTransactionID != nil {
+		t.Fatalf("editingTransactionID = %v, want nil after a successful save", m.editingTransactionID)
 	}
 }
 

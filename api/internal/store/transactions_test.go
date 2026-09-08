@@ -320,6 +320,130 @@ func TestTransactionStore_CreateGetListDelete(t *testing.T) {
 	}
 }
 
+func TestTransactionStore_Update(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+
+	created, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC),
+		Description: "Invoice #1",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	newTs := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+	updated, err := s.Transactions.Update(ctx, models.Transaction{
+		ID:          created.ID,
+		Timestamp:   newTs,
+		Description: "Invoice #1 (corrected)",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1500, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1500, CurrencyID: usd.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Description != "Invoice #1 (corrected)" || !updated.Timestamp.Equal(newTs) {
+		t.Fatalf("Update: got %+v", updated)
+	}
+
+	got, err := s.Transactions.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Description != "Invoice #1 (corrected)" || !got.Timestamp.Equal(newTs) {
+		t.Fatalf("Get after Update: got %+v", got)
+	}
+	if len(got.Entries) != 2 || got.Entries[0].Amount != 1500 || got.Entries[1].Amount != -1500 {
+		t.Fatalf("Get after Update: entries = %+v, want 1500/-1500", got.Entries)
+	}
+
+	if bal, ok := balanceFor(mustAccountBalances(t, s, cash.ID), usd.ID); !ok || bal != 1500 {
+		t.Fatalf("cash balance after Update = (%d, %v), want 1500 (old entry replaced, not added)", bal, ok)
+	}
+}
+
+func TestTransactionStore_UpdateRejectsUnbalanced(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+
+	created, err := s.Transactions.Create(ctx, models.Transaction{
+		Timestamp:   time.Now(),
+		Description: "Invoice #1",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = s.Transactions.Update(ctx, models.Transaction{
+		ID:          created.ID,
+		Timestamp:   created.Timestamp,
+		Description: created.Description,
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -900, CurrencyID: usd.ID},
+		},
+	})
+	if !errors.Is(err, store.ErrUnbalanced) {
+		t.Fatalf("Update: got %v, want ErrUnbalanced", err)
+	}
+
+	// The original, balanced entries must survive an unbalanced update
+	// attempt untouched.
+	got, err := s.Transactions.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Entries) != 2 || got.Entries[0].Amount != 1000 || got.Entries[1].Amount != -1000 {
+		t.Fatalf("Get after rejected Update: entries = %+v, want the original 1000/-1000", got.Entries)
+	}
+}
+
+func TestTransactionStore_UpdateRejectsUnknownID(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	cash, revenue := createTwoAccounts(t, s)
+	usd := createTestCurrency(t, s, "USD")
+
+	_, err := s.Transactions.Update(ctx, models.Transaction{
+		ID:          999999,
+		Timestamp:   time.Now(),
+		Description: "Does not exist",
+		Entries: []models.Entry{
+			{AccountID: cash.ID, Amount: 1000, CurrencyID: usd.ID},
+			{AccountID: revenue.ID, Amount: -1000, CurrencyID: usd.ID},
+		},
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Update: got %v, want ErrNotFound", err)
+	}
+}
+
+// mustAccountBalances is a small helper for tests that just want to
+// assert on one account's Balances after some mutation.
+func mustAccountBalances(t *testing.T, s *store.Store, accountID int64) []models.CurrencyAmount {
+	t.Helper()
+	a, err := s.Accounts.Get(context.Background(), accountID)
+	if err != nil {
+		t.Fatalf("Accounts.Get: %v", err)
+	}
+	return a.Balances
+}
+
 func TestTransactionStore_CreateRejectsUnbalanced(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
