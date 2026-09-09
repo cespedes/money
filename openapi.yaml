@@ -1,0 +1,883 @@
+openapi: 3.0.3
+info:
+  title: Money API
+  description: >-
+    A small double-entry accounting API on top of PostgreSQL (see `api/` and
+    `db/schema.sql` in the repository). All endpoints accept and return
+    JSON.
+
+
+    **Monetary amounts** (a transaction/ledger entry's `amount`, a ledger
+    row's `balance`, an account's `balances`) are stored internally as
+    integers in the currency's minor unit, but travel on the wire as a
+    decimal JSON number in the currency's own major unit — e.g. `10.50`,
+    never `1050` — via exact decimal-digit arithmetic (never floating
+    point), so no precision is lost. A value with more decimal digits than
+    the currency's `decimal_places` allows is rejected; one with fewer is
+    zero-padded. A response amount always shows exactly `decimal_places`
+    digits (`10.00`, not `10`), matching conventional money notation. A
+    currency price's `rate` is the one exception: it's an approximate
+    market price, not a ledger quantity, so it's a plain floating-point
+    number with no tie to any currency's `decimal_places`.
+
+
+    **Double-entry invariant**: a transaction's entries must sum to zero
+    *within each currency* — amounts in different currencies are never
+    summed together, so one transaction can freely mix currencies as long
+    as each balances on its own. A positive entry amount is a debit, a
+    negative one a credit. The one exception: a transaction touching
+    *exactly two* currencies, each with a nonzero net of opposite sign, is
+    accepted too, as an implicit currency exchange between them — see
+    `CurrencyPrice`'s `transaction_id`. This rule is enforced both before
+    writing (a 400 response) and by a deferred database constraint trigger
+    as a safety net.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:30730
+    description: >-
+      Default local address (docker compose, or `make api-run`); override
+      with the ADDR env var. Bound to 127.0.0.1 only by convention, in every
+      deployment this repository documents — never exposed directly to
+      other machines.
+
+tags:
+  - name: accounts
+    description: The chart of accounts.
+  - name: transactions
+    description: Double-entry transactions and their effect on an account's ledger.
+  - name: currencies
+    description: Units transaction entries are posted in.
+  - name: currency-prices
+    description: Observed and derived exchange rates between currencies.
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: The service is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /accounts:
+    get:
+      tags: [accounts]
+      summary: List accounts
+      operationId: listAccounts
+      responses:
+        "200":
+          description: Every account, each with its own balances and last-transaction time.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+    post:
+      tags: [accounts]
+      summary: Create an account
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "201":
+          description: The created account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /accounts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [accounts]
+      summary: Get an account
+      operationId: getAccount
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [accounts]
+      summary: Update an account
+      description: >-
+        Replaces `name`, `code` and `parent_id`. Never changes `position`
+        (see `POST /accounts/{id}/move` for that) or `balances`/
+        `last_transaction_at` (always computed from entries, never stored).
+      operationId: updateAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountInput"
+      responses:
+        "200":
+          description: The updated account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          description: >-
+            Invalid input, or `parent_id` would make the account its own
+            ancestor (directly or transitively).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [accounts]
+      summary: Delete an account
+      operationId: deleteAccount
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The account has child accounts or transaction entries referencing it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /accounts/{id}/transactions:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [accounts, transactions]
+      summary: Get an account's ledger
+      description: >-
+        Every transaction with an entry on this account, oldest first, each
+        contributing one row per currency it was posted in — with this
+        account's own amount in that currency and its running balance in
+        that same currency through that point (a running balance is never
+        mixed across currencies).
+      operationId: getAccountLedger
+      responses:
+        "200":
+          description: The account's ledger entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LedgerEntry"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /accounts/{id}/move:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    post:
+      tags: [accounts]
+      summary: Move an account up/down among its siblings
+      description: >-
+        Swaps this account's `position` with whichever sibling (another
+        account with the same `parent_id`) is immediately before/after it.
+        A no-op, not an error, if it's already first/last among its
+        siblings.
+      operationId: moveAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveAccountRequest"
+      responses:
+        "204":
+          description: Moved (or already at that end — a no-op).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /transactions:
+    get:
+      tags: [transactions]
+      summary: List transactions
+      operationId: listTransactions
+      responses:
+        "200":
+          description: Every transaction, each with its own entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+    post:
+      tags: [transactions]
+      summary: Create a transaction
+      operationId: createTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionInput"
+      responses:
+        "201":
+          description: The created transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "400":
+          description: >-
+            Invalid input (missing description/timestamp, fewer than two
+            entries, an amount with too many decimal digits, ...), an
+            unknown account/currency referenced by an entry, or entries
+            that don't satisfy the balance rule described above.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /transactions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [transactions]
+      summary: Get a transaction
+      operationId: getTransaction
+      responses:
+        "200":
+          description: The transaction, with its entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [transactions]
+      summary: Replace a transaction
+      description: >-
+        Replaces the transaction's `timestamp`, `description` and entries
+        wholesale (the old entries are deleted and the new ones inserted in
+        their place), subject to the same balance rules as creating one.
+      operationId: updateTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionInput"
+      responses:
+        "200":
+          description: The updated transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "400":
+          description: >-
+            Invalid input, an unknown account/currency referenced by an
+            entry, or entries that don't satisfy the balance rule described
+            above.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [transactions]
+      summary: Delete a transaction
+      operationId: deleteTransaction
+      responses:
+        "204":
+          description: Deleted (its entries go with it).
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /currencies:
+    get:
+      tags: [currencies]
+      summary: List currencies
+      operationId: listCurrencies
+      responses:
+        "200":
+          description: Every currency.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Currency"
+    post:
+      tags: [currencies]
+      summary: Create a currency
+      operationId: createCurrency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CurrencyInput"
+      responses:
+        "201":
+          description: The created currency.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Currency"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /currencies/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [currencies]
+      summary: Get a currency
+      operationId: getCurrency
+      responses:
+        "200":
+          description: The currency.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Currency"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [currencies]
+      summary: Update a currency
+      operationId: updateCurrency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CurrencyInput"
+      responses:
+        "200":
+          description: The updated currency.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Currency"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [currencies]
+      summary: Delete a currency
+      operationId: deleteCurrency
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The currency is referenced by transaction entries or currency prices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /currency-prices:
+    get:
+      tags: [currency-prices]
+      summary: List currency prices
+      description: >-
+        Includes every stored observation *and* a read-only, synthetic one
+        for every two-currency exchange transaction (see
+        `CurrencyPrice.transaction_id`) — computed live, so it always
+        matches the transaction and disappears if it's deleted, with
+        nothing to keep in sync by hand.
+      operationId: listCurrencyPrices
+      responses:
+        "200":
+          description: Every currency price, stored and transaction-implied alike.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CurrencyPrice"
+    post:
+      tags: [currency-prices]
+      summary: Record an exchange-rate observation
+      operationId: createCurrencyPrice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CurrencyPriceInput"
+      responses:
+        "201":
+          description: The created currency price.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrencyPrice"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /currency-prices/rate:
+    get:
+      tags: [currency-prices]
+      summary: Look up a rate between two currencies at an instant
+      description: >-
+        Answers "how many units of `quote` was one unit of `base` worth at
+        `at`" without requiring an observation recorded at exactly that
+        instant: it linearly interpolates between the nearest observations
+        before/after `at`, and — if there's no observation directly
+        relating the two currencies — chains through intermediate
+        currencies via the shortest path connecting them (e.g. EUR/USD ×
+        USD/GBP = EUR/GBP), combining both stored and transaction-implied
+        observations.
+      operationId: getCurrencyRate
+      parameters:
+        - name: base
+          in: query
+          required: true
+          description: The base currency's ID.
+          schema:
+            type: integer
+            format: int64
+        - name: quote
+          in: query
+          required: true
+          description: The quote currency's ID.
+          schema:
+            type: integer
+            format: int64
+        - name: at
+          in: query
+          required: false
+          description: An RFC 3339 timestamp. Defaults to now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: The rate at that instant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RateResponse"
+        "400":
+          description: A missing/invalid `base`, `quote`, or `at`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The two currencies aren't connected by any chain of observations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /currency-prices/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      tags: [currency-prices]
+      summary: Get a currency price
+      description: >-
+        Only a stored observation can be fetched by ID this way — a
+        transaction-implied one (`id` always `0`) isn't a row of its own;
+        fetch the transaction itself instead (`GET /transactions/{id}`).
+      operationId: getCurrencyPrice
+      responses:
+        "200":
+          description: The currency price.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrencyPrice"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [currency-prices]
+      summary: Delete a currency price
+      description: >-
+        Only a stored observation can be deleted this way — a
+        transaction-implied one has no row to delete; delete or edit the
+        underlying transaction instead.
+      operationId: deleteCurrencyPrice
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      description: The resource's own numeric ID.
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    BadRequest:
+      description: Invalid input.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No resource with that ID exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      description: The uniform error body returned by every non-2xx response.
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+      required: [status]
+
+    CurrencyAmount:
+      type: object
+      properties:
+        currency_id:
+          type: integer
+          format: int64
+        amount:
+          type: number
+          description: >-
+            Decimal amount in this currency's own major unit (e.g.
+            `10.50`), not an integer count of minor units.
+      required: [currency_id, amount]
+
+    Account:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        parent_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Another account's ID, for a chart-of-accounts hierarchy.
+        position:
+          type: integer
+          format: int64
+          readOnly: true
+          description: >-
+            Orders this account for display among its siblings (other
+            accounts sharing the same parent_id). Assigned automatically on
+            creation; only changed via POST /accounts/{id}/move.
+        balances:
+          type: array
+          readOnly: true
+          description: >-
+            This account's own entries (not any child accounts'), summed
+            per currency. A currency it's never been posted in has no
+            entry here at all, rather than a zero one.
+          items:
+            $ref: "#/components/schemas/CurrencyAmount"
+        last_transaction_at:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+          description: >-
+            The most recent transaction timestamp among this account's own
+            entries, or absent if it has none.
+      required: [id, name, position, balances]
+
+    AccountInput:
+      type: object
+      properties:
+        name:
+          type: string
+        code:
+          type: string
+          nullable: true
+        parent_id:
+          type: integer
+          format: int64
+          nullable: true
+      required: [name]
+
+    Currency:
+      type: object
+      description: >-
+        A unit ("commodity") transaction entries can be posted in, along
+        with how to format an amount in it.
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        name:
+          type: string
+        symbol_before:
+          type: boolean
+          default: false
+          description: Whether name goes before the amount (true) or after it (false).
+        symbol_space:
+          type: boolean
+          default: false
+          description: Whether to put a space between name and the amount.
+        thousands_separator:
+          type: string
+          description: Separates groups of thousands, or "" for none.
+        decimal_separator:
+          type: string
+        decimal_places:
+          type: integer
+          minimum: 0
+          description: >-
+            How many of a stored integer minor-unit amount's low digits are
+            fractional; also how many decimal digits a response amount in
+            this currency always shows.
+        isin:
+          type: string
+          nullable: true
+          description: This currency's International Securities Identification Number, if any.
+      required:
+        - id
+        - name
+        - symbol_before
+        - symbol_space
+        - thousands_separator
+        - decimal_separator
+        - decimal_places
+
+    CurrencyInput:
+      type: object
+      properties:
+        name:
+          type: string
+        symbol_before:
+          type: boolean
+          default: false
+        symbol_space:
+          type: boolean
+          default: false
+        thousands_separator:
+          type: string
+        decimal_separator:
+          type: string
+        decimal_places:
+          type: integer
+          minimum: 0
+          default: 0
+        isin:
+          type: string
+          nullable: true
+      required: [name]
+
+    CurrencyPrice:
+      type: object
+      description: >-
+        A directly-observed or transaction-implied exchange rate: one unit
+        of base_currency_id was worth rate units of quote_currency_id, as
+        of as_of.
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+          description: Always 0 for a transaction-implied observation (see transaction_id).
+        base_currency_id:
+          type: integer
+          format: int64
+        quote_currency_id:
+          type: integer
+          format: int64
+        rate:
+          type: number
+          format: double
+          description: >-
+            An approximate market price, not an integer tied to either
+            currency's decimal_places.
+        as_of:
+          type: string
+          format: date-time
+        transaction_id:
+          type: integer
+          format: int64
+          nullable: true
+          readOnly: true
+          description: >-
+            Absent/null for an ordinary observation stored as its own row.
+            Set instead for a read-only observation derived live from a
+            two-currency exchange transaction's entries (id is then always
+            0, since it isn't a stored row) — such an observation can only
+            be changed by editing or deleting that transaction, never
+            directly (it has no id of its own to PUT/DELETE).
+      required: [id, base_currency_id, quote_currency_id, rate, as_of]
+
+    CurrencyPriceInput:
+      type: object
+      properties:
+        base_currency_id:
+          type: integer
+          format: int64
+        quote_currency_id:
+          type: integer
+          format: int64
+        rate:
+          type: number
+          format: double
+        as_of:
+          type: string
+          format: date-time
+      required: [base_currency_id, quote_currency_id, rate, as_of]
+
+    Entry:
+      type: object
+      description: >-
+        One leg of a transaction: a signed amount, in a specific currency,
+        posted to an account. Positive is a debit, negative a credit.
+      properties:
+        account_id:
+          type: integer
+          format: int64
+        amount:
+          type: number
+          description: Decimal amount in this entry's own currency's major unit.
+        currency_id:
+          type: integer
+          format: int64
+      required: [account_id, amount, currency_id]
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          readOnly: true
+        timestamp:
+          type: string
+          format: date-time
+        description:
+          type: string
+        entries:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/Entry"
+      required: [id, timestamp, description, entries]
+
+    TransactionInput:
+      type: object
+      description: >-
+        entries must sum to zero within each currency, or — as the one
+        exception — touch exactly two currencies with a nonzero net of
+        opposite sign (an implicit currency exchange; see
+        CurrencyPrice.transaction_id).
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        description:
+          type: string
+        entries:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/Entry"
+      required: [timestamp, description, entries]
+
+    LedgerEntry:
+      type: object
+      description: >-
+        One transaction's effect on a specific account, in a specific
+        currency (see GET /accounts/{id}/transactions).
+      properties:
+        transaction_id:
+          type: integer
+          format: int64
+        timestamp:
+          type: string
+          format: date-time
+        description:
+          type: string
+        currency_id:
+          type: integer
+          format: int64
+        amount:
+          type: number
+          description: This account's own amount in this currency within the transaction.
+        balance:
+          type: number
+          description: This account's running balance in this same currency, through this point, in timestamp order.
+      required:
+        - transaction_id
+        - timestamp
+        - description
+        - currency_id
+        - amount
+        - balance
+
+    MoveAccountRequest:
+      type: object
+      properties:
+        direction:
+          type: string
+          enum: [up, down]
+      required: [direction]
+
+    RateResponse:
+      type: object
+      properties:
+        base_currency_id:
+          type: integer
+          format: int64
+        quote_currency_id:
+          type: integer
+          format: int64
+        rate:
+          type: number
+          format: double
+        at:
+          type: string
+          format: date-time
+      required: [base_currency_id, quote_currency_id, rate, at]

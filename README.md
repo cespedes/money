@@ -153,7 +153,9 @@ make test
 
 ## API
 
-All endpoints accept and return JSON.
+All endpoints accept and return JSON. See `openapi.yaml` at the repo root
+for the full OpenAPI specification (every schema and status code); the
+table below is just a quick reference.
 
 | Method | Path                | Description                              |
 |--------|---------------------|-------------------------------------------|
